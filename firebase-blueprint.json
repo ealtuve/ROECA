@@ -1,0 +1,341 @@
+{
+  "entities": {
+    "Branch": {
+      "title": "Branch",
+      "description": "Sucursal operativa de Distribuidora ROECA C.A.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico de sucursal" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 40, "description": "Código único de sucursal" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160, "description": "Nombre de la sucursal" },
+        "address": { "type": "string", "maxLength": 300, "description": "Dirección física" },
+        "phone": { "type": "string", "maxLength": 40, "description": "Teléfono de contacto" },
+        "isMain": { "type": "boolean", "description": "Indica si es la sede principal" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario del espacio de trabajo" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de creación en servidor" }
+      },
+      "required": ["id", "code", "name", "isMain", "ownerUid", "createdAt"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Operador o usuario del sistema ERP ROECA con clave cifrada y permisos por módulo",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico del operador" },
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Identificador único del operador" },
+        "username": { "type": "string", "maxLength": 60, "description": "Nombre de usuario para acceso en ventana de seguridad" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160, "description": "Correo electrónico del operador" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160, "description": "Nombre completo del operador" },
+        "role": { "type": "string", "enum": ["admin", "gerente", "cajero", "almacen", "contador"], "description": "Nivel de seguridad / rol del operador" },
+        "passwordHash": { "type": "string", "maxLength": 200, "description": "Hash PBKDF2-SHA256 de la clave de acceso" },
+        "passwordSalt": { "type": "string", "maxLength": 100, "description": "Sal criptográfica única del operador" },
+        "allowedModules": { "type": "array", "items": { "type": "string" }, "description": "Lista de módulos tildados permitidos para este usuario" },
+        "lastLoginAt": { "type": "string", "maxLength": 40, "description": "Última fecha/hora de inicio de sesión" },
+        "branchId": { "type": "number", "description": "Sucursal asignada" },
+        "isActive": { "type": "boolean", "description": "Estado activo/inactivo" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario del espacio de trabajo" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de creación en servidor" }
+      },
+      "required": ["id", "uid", "email", "name", "role", "isActive", "ownerUid", "createdAt"]
+    },
+    "ExchangeRate": {
+      "title": "ExchangeRate",
+      "description": "Tasa de cambio USD / VES (BCV o administrativa)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico" },
+        "rate": { "type": "number", "description": "Valor en Bolívares por 1 USD" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 20, "description": "Fecha YYYY-MM-DD" },
+        "source": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Fuente oficial o manual" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario del espacio de trabajo" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de registro en servidor" }
+      },
+      "required": ["id", "rate", "date", "source", "ownerUid", "createdAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Categoría de inventario de productos",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Nombre de la categoría" },
+        "description": { "type": "string", "maxLength": 300, "description": "Descripción de la categoría" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario del espacio de trabajo" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de creación" }
+      },
+      "required": ["id", "name", "ownerUid", "createdAt"]
+    },
+    "Zone": {
+      "title": "Zone",
+      "description": "Zona comercial y Estado de Venezuela para distribución y reportes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 40, "description": "Código único de zona" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 140, "description": "Nombre de la zona o sector" },
+        "state": { "type": "string", "minLength": 1, "maxLength": 80, "description": "Estado de Venezuela" },
+        "description": { "type": "string", "maxLength": 300, "description": "Descripción o ruta" },
+        "isActive": { "type": "boolean", "description": "Zona activa o inactiva" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario del espacio de trabajo" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de creación" }
+      },
+      "required": ["id", "code", "name", "state", "isActive", "ownerUid", "createdAt"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Artículo de inventario con código de barras, costo, precio y existencias",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 64, "description": "Código de barras o SKU" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Nombre del producto" },
+        "description": { "type": "string", "maxLength": 400, "description": "Descripción" },
+        "categoryId": { "type": "number", "description": "ID de categoría" },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 40, "description": "Unidad de medida" },
+        "costUsd": { "type": "number", "description": "Costo unitario USD" },
+        "priceUsd": { "type": "number", "description": "Precio de venta USD" },
+        "stock": { "type": "number", "description": "Existencia actual" },
+        "minStock": { "type": "number", "description": "Stock mínimo de alerta" },
+        "branchId": { "type": "number", "description": "Sucursal" },
+        "imageUrl": { "type": "string", "maxLength": 500, "description": "URL de imagen opcional" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de creación" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Última actualización" }
+      },
+      "required": ["id", "code", "name", "unit", "costUsd", "priceUsd", "stock", "minStock", "ownerUid", "createdAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Cliente comercial con estado, zona, límite de crédito y saldo pendiente",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico" },
+        "idDoc": { "type": "string", "minLength": 1, "maxLength": 40, "description": "Cédula o RIF" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Nombre o Razón Social" },
+        "phone": { "type": "string", "maxLength": 40, "description": "Teléfono" },
+        "email": { "type": "string", "maxLength": 160, "description": "Correo electrónico registrado" },
+        "address": { "type": "string", "maxLength": 350, "description": "Dirección comercial" },
+        "state": { "type": "string", "maxLength": 80, "description": "Estado de Venezuela" },
+        "zoneId": { "type": "number", "description": "ID de zona asignada" },
+        "zoneName": { "type": "string", "maxLength": 140, "description": "Nombre de zona asignada" },
+        "creditEnabled": { "type": "boolean", "description": "Indica si el cliente tiene permiso para compras a crédito" },
+        "creditDays": { "type": "number", "description": "Plazo en días para pagar facturas a crédito" },
+        "isSuspended": { "type": "boolean", "description": "Indica si el cliente está suspendido" },
+        "creditRating": { "type": "string", "enum": ["nuevo", "excelente", "regular", "malo"], "description": "Categoría crediticia según puntualidad de pago" },
+        "onTimePaymentsCount": { "type": "number", "description": "Pagos a tiempo acumulados" },
+        "latePaymentsCount": { "type": "number", "description": "Pagos con leve retraso (regular)" },
+        "veryLatePaymentsCount": { "type": "number", "description": "Pagos con retraso severo (malo)" },
+        "creditLimitUsd": { "type": "number", "description": "Límite de crédito USD" },
+        "currentBalanceUsd": { "type": "number", "description": "Saldo deudor pendiente USD" },
+        "branchId": { "type": "number", "description": "Sucursal" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de registro" }
+      },
+      "required": ["id", "idDoc", "name", "creditEnabled", "creditDays", "isSuspended", "creditRating", "creditLimitUsd", "currentBalanceUsd", "ownerUid", "createdAt"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Proveedor comercial con estado, zona y saldo de cuentas por pagar",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number", "description": "Identificador numérico" },
+        "idDoc": { "type": "string", "minLength": 1, "maxLength": 40, "description": "RIF o Cédula" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Razón Social o Nombre" },
+        "contactPerson": { "type": "string", "maxLength": 160, "description": "Persona de contacto" },
+        "phone": { "type": "string", "maxLength": 40, "description": "Teléfono" },
+        "email": { "type": "string", "maxLength": 160, "description": "Correo electrónico" },
+        "address": { "type": "string", "maxLength": 350, "description": "Dirección física" },
+        "state": { "type": "string", "maxLength": 80, "description": "Estado de Venezuela" },
+        "zoneId": { "type": "number", "description": "ID de zona asignada" },
+        "zoneName": { "type": "string", "maxLength": 140, "description": "Nombre de zona asignada" },
+        "currentBalanceUsd": { "type": "number", "description": "Saldo por pagar USD" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "description": "UID del propietario" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Fecha de registro" }
+      },
+      "required": ["id", "idDoc", "name", "currentBalanceUsd", "ownerUid", "createdAt"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Factura de venta de contado o a crédito",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "invoiceNumber": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "clientId": { "type": "number" },
+        "branchId": { "type": "number" },
+        "cashierUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "date": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "dueDate": { "type": "string", "maxLength": 20 },
+        "paymentType": { "type": "string", "enum": ["contado", "credito"] },
+        "status": { "type": "string", "enum": ["pagada", "parcial", "pendiente", "anulada"] },
+        "exchangeRate": { "type": "number" },
+        "totalUsd": { "type": "number" },
+        "totalVes": { "type": "number" },
+        "amountPaidUsd": { "type": "number" },
+        "balanceDueUsd": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "invoiceNumber", "clientId", "cashierUid", "date", "paymentType", "status", "exchangeRate", "totalUsd", "totalVes", "amountPaidUsd", "balanceDueUsd", "ownerUid", "createdAt"]
+    },
+    "SaleItem": {
+      "title": "SaleItem",
+      "description": "Renglón de producto de una factura de venta",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "saleId": { "type": "number" },
+        "productId": { "type": "number" },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "productCode": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "quantity": { "type": "number" },
+        "unitPriceUsd": { "type": "number" },
+        "subtotalUsd": { "type": "number" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "saleId", "productId", "productName", "productCode", "quantity", "unitPriceUsd", "subtotalUsd", "ownerUid", "createdAt"]
+    },
+    "Purchase": {
+      "title": "Purchase",
+      "description": "Compra o carga de mercancía con o sin factura",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "invoiceNumber": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "supplierId": { "type": "number" },
+        "branchId": { "type": "number" },
+        "date": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "paymentType": { "type": "string", "enum": ["contado", "credito"] },
+        "status": { "type": "string", "enum": ["pagada", "parcial", "pendiente", "anulada"] },
+        "exchangeRate": { "type": "number" },
+        "totalUsd": { "type": "number" },
+        "amountPaidUsd": { "type": "number" },
+        "balanceDueUsd": { "type": "number" },
+        "notes": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "invoiceNumber", "supplierId", "date", "paymentType", "status", "exchangeRate", "totalUsd", "amountPaidUsd", "balanceDueUsd", "ownerUid", "createdAt"]
+    },
+    "PurchaseItem": {
+      "title": "PurchaseItem",
+      "description": "Renglón de producto recibido en compra o carga de mercancía",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "purchaseId": { "type": "number" },
+        "productId": { "type": "number" },
+        "productName": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "quantity": { "type": "number" },
+        "unitCostUsd": { "type": "number" },
+        "subtotalUsd": { "type": "number" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "purchaseId", "productId", "productName", "quantity", "unitCostUsd", "subtotalUsd", "ownerUid", "createdAt"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Registro de pago o abono multimoneda (CxC / CxP)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "type": { "type": "string", "enum": ["cliente_abono", "proveedor_pago"] },
+        "saleId": { "type": "number" },
+        "purchaseId": { "type": "number" },
+        "clientId": { "type": "number" },
+        "supplierId": { "type": "number" },
+        "amountOriginal": { "type": "number" },
+        "currency": { "type": "string", "enum": ["USD", "VES"] },
+        "exchangeRate": { "type": "number" },
+        "amountUsd": { "type": "number" },
+        "amountVes": { "type": "number" },
+        "paymentMethod": { "type": "string", "enum": ["efectivo_usd", "efectivo_ves", "pago_movil", "transferencia", "punto_de_venta"] },
+        "bank": { "type": "string", "maxLength": 100 },
+        "reference": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "cashierUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "type", "amountOriginal", "currency", "exchangeRate", "amountUsd", "amountVes", "paymentMethod", "cashierUid", "ownerUid", "createdAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Registro inmutable de actividad por cada usuario/operador del sistema",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "operatorUsername": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "operatorName": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "operatorRole": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "action": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "module": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "details": { "type": "string", "maxLength": 500 },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "operatorUsername", "operatorName", "operatorRole", "action", "module", "ownerUid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/branches/{branchId}": {
+      "schema": { "$ref": "#/entities/Branch" },
+      "description": "Sucursales de Distribuidora ROECA"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "Operadores y roles del sistema"
+    },
+    "/exchangeRates/{rateId}": {
+      "schema": { "$ref": "#/entities/ExchangeRate" },
+      "description": "Historial de tasas BCV y manuales"
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Categorías de inventario"
+    },
+    "/zones/{zoneId}": {
+      "schema": { "$ref": "#/entities/Zone" },
+      "description": "Zonas comerciales y estados de Venezuela"
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Catálogo e inventario de productos"
+    },
+    "/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Directorio de clientes con estado, zona y CxC"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Directorio de proveedores con estado, zona y CxP"
+    },
+    "/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Facturas de venta emitidas"
+    },
+    "/saleItems/{itemId}": {
+      "schema": { "$ref": "#/entities/SaleItem" },
+      "description": "Renglones de facturas de venta"
+    },
+    "/purchases/{purchaseId}": {
+      "schema": { "$ref": "#/entities/Purchase" },
+      "description": "Compras y cargas de mercancía"
+    },
+    "/purchaseItems/{itemId}": {
+      "schema": { "$ref": "#/entities/PurchaseItem" },
+      "description": "Renglones de mercancía recibida"
+    },
+    "/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/Payment" },
+      "description": "Pagos y abonos multimoneda de CxC y CxP"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Bitácora inmutable de accesos y operaciones por usuario"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="100%" stop-color="#065f46" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <rect x="44" y="44" width="424" height="424" rx="84" fill="none" stroke="#34d399" stroke-opacity="0.35" stroke-width="10" />
+  <text x="256" y="295" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="196" fill="#ffffff" letter-spacing="-6">DR</text>
+  <text x="256" y="378" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-weight="700" font-size="42" fill="#a7f3d0" letter-spacing="10">ROECA</text>
+</svg>

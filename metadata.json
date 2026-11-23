@@ -1,0 +1,6 @@
+{
+  "name": "Distribuidora ROECA - Sistema Administrativo",
+  "description": "Sistema administrativo integral para supermercado de víveres Distribuidora ROECA: facturación, inventario, reportes de ventas, cuentas por cobrar y pagar con abonos multimoneda (USD/VES), proveedores, clientes y control de flujo de caja.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
