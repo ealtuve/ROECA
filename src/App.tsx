@@ -31,7 +31,7 @@ import { apiFetch } from './lib/firestoreStore.ts';
 import {
   ShieldAlert,
   Loader2,
-  PanelLeftOpen,
+  Menu,
   TrendingUp,
   Sun,
   Moon,
@@ -67,7 +67,7 @@ function MainLayout() {
   const { user, firebaseUser, authReady, isSeeding, hasPermission, activeBranch, lockOperatorSession } = useAuth();
   const { isDark, toggleTheme } = useTheme();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
-  const [isPosFullscreen, setIsPosFullscreen] = useState<boolean>(false);
+  const [isPosMenuOpen, setIsPosMenuOpen] = useState<boolean>(false);
   const [exchangeRate, setExchangeRate] = useState<ExchangeRate | null>(null);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const lastOperatorIdRef = useRef<number | null>(null);
@@ -100,22 +100,20 @@ function MainLayout() {
     }
   }, [authReady, firebaseUser, user, isSeeding, fetchGlobalData]);
 
-  // Automatically open full-screen Facturación (POS) when caja1..caja6 or any cajero signs in
+  // Automatically open Facturación (POS) when caja1..caja6 or any cajero signs in
   useEffect(() => {
     if (!user) {
       lastOperatorIdRef.current = null;
-      setIsPosFullscreen(false);
+      setIsPosMenuOpen(false);
       return;
     }
 
     if (lastOperatorIdRef.current !== user.id) {
       lastOperatorIdRef.current = user.id;
+      setIsPosMenuOpen(false);
       if (isCashierFullscreenUser(user) && hasPermission('billing')) {
         setCurrentTab('billing');
-        setIsPosFullscreen(true);
         return;
-      } else {
-        setIsPosFullscreen(false);
       }
     }
 
@@ -126,6 +124,22 @@ function MainLayout() {
       }
     }
   }, [user, currentTab, hasPermission]);
+
+  // Close the POS left menu drawer whenever navigating or pressing Escape
+  useEffect(() => {
+    setIsPosMenuOpen(false);
+  }, [currentTab]);
+
+  useEffect(() => {
+    if (!isPosMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsPosMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isPosMenuOpen]);
 
   if (!authReady || isSeeding) {
     return (
@@ -156,41 +170,77 @@ function MainLayout() {
     return hasPermission(tab as ModuleKey);
   };
 
+  // Entering Facturación (POS) always expands to full screen; left menu only appears via the "Menú" button
   const isFullScreenBillingActive =
-    isPosFullscreen && currentTab === 'billing' && isTabAllowed('billing');
+    currentTab === 'billing' && isTabAllowed('billing');
 
-  const hasOtherModulesBesidesBilling = NAV_ORDER.some(
-    (m) => m !== 'billing' && hasPermission(m)
-  );
+  const handleSelectSidebarTab = (tab: string) => {
+    setIsPosMenuOpen(false);
+    if (tab === 'branches') {
+      setIsBranchesModalOpen(true);
+    } else {
+      setCurrentTab(tab);
+      if (tab !== 'inventory') setInitialLowStockFilter(false);
+    }
+  };
 
   return (
     <div className="flex h-screen w-screen bg-slate-100 dark:bg-[#0d1117] overflow-hidden text-slate-900 dark:text-slate-100 antialiased selection:bg-emerald-500 selection:text-white transition-colors">
-      {/* Left Navigation Menu (hidden in full-screen POS mode for maximum billing visibility) */}
+      {/* Persistent Left Navigation Menu on non-POS screens */}
       {!isFullScreenBillingActive && (
         <Sidebar
           currentTab={currentTab}
-          setCurrentTab={(tab) => {
-            if (tab === 'branches') {
-              setIsBranchesModalOpen(true);
-            } else {
-              setCurrentTab(tab);
-              if (tab !== 'inventory') setInitialLowStockFilter(false);
-              if (tab === 'billing' && isCashierFullscreenUser(user)) {
-                setIsPosFullscreen(true);
-              }
-            }
-          }}
+          setCurrentTab={handleSelectSidebarTab}
           onOpenAuth={() => setIsAuthModalOpen(true)}
         />
       )}
 
+      {/* On-Demand Left Menu Drawer in Full-Screen POS Mode (opened only when user clicks "Menú") */}
+      {isFullScreenBillingActive && isPosMenuOpen && (
+        <div
+          className="fixed inset-0 z-50 flex"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Menú principal"
+        >
+          <div className="relative z-10 h-full shadow-2xl">
+            <Sidebar
+              currentTab={currentTab}
+              setCurrentTab={handleSelectSidebarTab}
+              onOpenAuth={() => {
+                setIsPosMenuOpen(false);
+                setIsAuthModalOpen(true);
+              }}
+              onClose={() => setIsPosMenuOpen(false)}
+            />
+          </div>
+          <button
+            type="button"
+            aria-label="Cerrar menú lateral"
+            onClick={() => setIsPosMenuOpen(false)}
+            className="flex-1 bg-slate-950/45 backdrop-blur-[1px] cursor-pointer"
+          />
+        </div>
+      )}
+
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
-        {/* Top Header — ultra-compact strip in full-screen POS mode so billing fills the whole viewport */}
+        {/* Top Header — ultra-compact strip in full-screen POS mode with "Menú" toggle button */}
         {isFullScreenBillingActive ? (
           <header className="h-11 bg-white dark:bg-[#161b22] border-b border-slate-200 dark:border-[#262f3c] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 transition-colors">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-7 h-7 rounded-md bg-emerald-600 flex items-center justify-center font-bold text-white text-xs tracking-wider shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsPosMenuOpen((prev) => !prev)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-200 hover:bg-slate-300 dark:bg-[#212834] dark:hover:bg-[#2b3444] border border-slate-300 dark:border-[#344054] text-xs font-bold text-slate-800 dark:text-slate-100 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                title="Abrir menú lateral"
+                aria-expanded={isPosMenuOpen}
+              >
+                <Menu className="w-3.5 h-3.5 shrink-0" />
+                <span>Menú</span>
+              </button>
+
+              <div className="w-7 h-7 rounded-md bg-emerald-600 flex items-center justify-center font-bold text-white text-xs tracking-wider shrink-0 hidden sm:flex">
                 DR
               </div>
               <div className="flex items-center gap-2 min-w-0 text-xs">
@@ -201,34 +251,36 @@ function MainLayout() {
                 <span className="text-slate-500 dark:text-slate-400 truncate hidden sm:inline">
                   {activeBranch?.name || 'Sede Principal'}
                 </span>
-                <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">·</span>
-                <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400 whitespace-nowrap shrink-0">
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-600 hidden md:inline">·</span>
+                <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400 whitespace-nowrap shrink-0 hidden md:inline">
                   @{user.username || user.name}
                 </span>
               </div>
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
-              <div className="flex items-center gap-1.5 text-xs font-mono tabular-nums text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-md bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 whitespace-nowrap shrink-0">
-                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                <span className="font-bold">
-                  {exchangeRate ? `${exchangeRate.rate.toFixed(2)} Bs/$` : 'BCV'}
-                </span>
-              </div>
-
-              <OfflineIndicator variant="badge" />
-
-              {hasOtherModulesBesidesBilling && (
+              {hasPermission('exchange') ? (
                 <button
                   type="button"
-                  onClick={() => setIsPosFullscreen(false)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-[#1c222b] dark:hover:bg-[#252c38] border border-slate-200 dark:border-[#2d3748] text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                  title="Mostrar menú lateral de módulos"
+                  onClick={() => setIsExchangeModalOpen(true)}
+                  className="flex items-center gap-1.5 text-xs font-mono tabular-nums text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-md bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800/60 whitespace-nowrap shrink-0 transition-colors cursor-pointer"
+                  title="Actualizar tasa BCV"
                 >
-                  <PanelLeftOpen className="w-3.5 h-3.5" />
-                  <span className="hidden md:inline">Menú</span>
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="font-bold">
+                    {exchangeRate ? `${exchangeRate.rate.toFixed(2)} Bs/$` : 'BCV'}
+                  </span>
                 </button>
+              ) : (
+                <div className="flex items-center gap-1.5 text-xs font-mono tabular-nums text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-md bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 whitespace-nowrap shrink-0">
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="font-bold">
+                    {exchangeRate ? `${exchangeRate.rate.toFixed(2)} Bs/$` : 'BCV'}
+                  </span>
+                </div>
               )}
+
+              <OfflineIndicator variant="badge" />
 
               <button
                 type="button"
@@ -263,7 +315,7 @@ function MainLayout() {
           <Header
             exchangeRate={exchangeRate}
             onOpenExchangeModal={() => {
-              if (currentTab !== 'billing' && hasPermission('dashboard')) {
+              if (hasPermission('dashboard')) {
                 setCurrentTab('dashboard');
                 setDashboardAdminRequest({ tab: 'tasa', seq: Date.now() });
               } else {
@@ -281,8 +333,6 @@ function MainLayout() {
             onOpenAuthModal={() => setIsAuthModalOpen(true)}
             lowStockCount={dashboardStats?.lowStockCount || 0}
             onNavigateToLowStock={handleNavigateToLowStock}
-            isBillingTab={currentTab === 'billing'}
-            onEnterPosFullscreen={() => setIsPosFullscreen(true)}
           />
         )}
 

@@ -13,6 +13,7 @@ import {
   UserCheck,
   PackagePlus,
   PieChart,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { ModuleKey } from '../types/index.ts';
@@ -21,9 +22,10 @@ interface SidebarProps {
   currentTab: string;
   setCurrentTab: (tab: string) => void;
   onOpenAuth: () => void;
+  onClose?: () => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ currentTab, setCurrentTab, onOpenAuth }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ currentTab, setCurrentTab, onOpenAuth, onClose }) => {
   const { user, activeBranch, hasPermission, lockOperatorSession } = useAuth();
 
   const menuItems: Array<{
@@ -142,18 +144,31 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, setCurrentTab, onO
     <aside className="w-72 bg-slate-200 dark:bg-[#10141b] text-slate-900 dark:text-slate-100 flex flex-col shrink-0 h-screen border-r border-slate-300 dark:border-[#283242] select-none transition-colors">
       {/* Brand Header */}
       <div className="p-5 border-b border-slate-300 dark:border-[#283242]">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-emerald-600 flex items-center justify-center font-bold text-white tracking-wider shadow-xs">
-            DR
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-lg bg-emerald-600 flex items-center justify-center font-bold text-white tracking-wider shadow-xs shrink-0">
+              DR
+            </div>
+            <div className="overflow-hidden">
+              <h1 className="text-base font-bold text-slate-900 dark:text-white tracking-tight leading-none whitespace-nowrap">
+                Distribuidora ROECA
+              </h1>
+              <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium mt-1 truncate">
+                {activeBranch?.name || 'Sede Principal'}
+              </p>
+            </div>
           </div>
-          <div className="overflow-hidden">
-            <h1 className="text-base font-bold text-slate-900 dark:text-white tracking-tight leading-none whitespace-nowrap">
-              Distribuidora ROECA
-            </h1>
-            <p className="text-xs text-emerald-700 dark:text-emerald-400 font-medium mt-1 truncate">
-              {activeBranch?.name || 'Sede Principal'}
-            </p>
-          </div>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-300/80 dark:hover:bg-[#1a212c] transition-colors cursor-pointer shrink-0"
+              title="Cerrar menú"
+              aria-label="Cerrar menú"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
