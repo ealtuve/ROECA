@@ -38,7 +38,20 @@ interface EntryItem {
   quantity: number;
   unitCostUsd: number;
   newPriceUsd: number;
+  qtyText: string;
+  costVesText: string;
+  costUsdText: string;
+  priceUsdText: string;
 }
+
+const sanitizeDecimalTyping = (raw: string) => raw.replace(/[^0-9.,]/g, '');
+
+const parseDecimalInput = (raw: string): number => {
+  const normalized = raw.trim().replace(',', '.');
+  if (!normalized || normalized === '.') return 0;
+  const num = Number(normalized);
+  return Number.isFinite(num) && num >= 0 ? num : 0;
+};
 
 type EntryMode = 'con_factura' | 'sin_factura';
 type ManualSupplierType = 'persona_natural' | 'firma_personal' | 'empresa_manual';
@@ -271,17 +284,29 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
     setItems((prev) => {
       const existing = prev.find((i) => i.product.id === product.id);
       if (existing) {
+        const nextQty = Math.round((existing.quantity + 1) * 100) / 100;
         return prev.map((i) =>
-          i.product.id === product.id ? { ...i, quantity: i.quantity + 1 } : i
+          i.product.id === product.id
+            ? { ...i, quantity: nextQty, qtyText: String(nextQty) }
+            : i
         );
       }
+      const initialCostUsd =
+        product.costUsd > 0
+          ? Math.round(product.costUsd * 100) / 100
+          : Math.round(product.priceUsd * 0.75 * 100) / 100;
+      const initialPriceUsd = Math.round((product.priceUsd || 0) * 100) / 100;
       return [
         ...prev,
         {
           product,
           quantity: 1,
-          unitCostUsd: product.costUsd > 0 ? product.costUsd : Math.round(product.priceUsd * 0.75 * 100) / 100,
-          newPriceUsd: product.priceUsd,
+          unitCostUsd: initialCostUsd,
+          newPriceUsd: initialPriceUsd,
+          qtyText: '1',
+          costVesText: (initialCostUsd * rate).toFixed(2),
+          costUsdText: initialCostUsd.toFixed(2),
+          priceUsdText: initialPriceUsd.toFixed(2),
         },
       ];
     });
@@ -302,10 +327,25 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
     }
   };
 
-  const updateItemQty = (productId: number, qty: number) => {
-    if (isNaN(qty) || qty < 0) return;
+  const updateItemQtyText = (productId: number, raw: string) => {
+    const cleaned = sanitizeDecimalTyping(raw);
+    const val = parseDecimalInput(cleaned);
     setItems((prev) =>
-      prev.map((i) => (i.product.id === productId ? { ...i, quantity: qty } : i))
+      prev.map((i) =>
+        i.product.id === productId
+          ? { ...i, qtyText: cleaned, quantity: cleaned === '' ? 0 : val }
+          : i
+      )
+    );
+  };
+
+  const blurItemQty = (productId: number) => {
+    setItems((prev) =>
+      prev.map((i) => {
+        if (i.product.id !== productId) return i;
+        const safeQty = i.quantity > 0 ? Math.round(i.quantity * 100) / 100 : 1;
+        return { ...i, quantity: safeQty, qtyText: String(safeQty) };
+      })
     );
   };
 
@@ -315,7 +355,7 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
         .map((i) => {
           if (i.product.id === productId) {
             const next = Math.max(0, Math.round((i.quantity + delta) * 100) / 100);
-            return next > 0 ? { ...i, quantity: next } : null;
+            return next > 0 ? { ...i, quantity: next, qtyText: String(next) } : null;
           }
           return i;
         })
@@ -324,24 +364,94 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
   };
 
   const updateItemCostUsd = (productId: number, rawUsd: string) => {
-    const val = rawUsd === '' ? 0 : Math.max(0, Number(rawUsd) || 0);
+    const cleaned = sanitizeDecimalTyping(rawUsd);
+    const valUsd = parseDecimalInput(cleaned);
     setItems((prev) =>
-      prev.map((i) => (i.product.id === productId ? { ...i, unitCostUsd: val } : i))
+      prev.map((i) =>
+        i.product.id === productId
+          ? {
+              ...i,
+              unitCostUsd: valUsd,
+              costUsdText: cleaned,
+              costVesText: cleaned === '' ? '' : (valUsd * rate).toFixed(2),
+            }
+          : i
+      )
+    );
+  };
+
+  const blurItemCostUsd = (productId: number) => {
+    setItems((prev) =>
+      prev.map((i) =>
+        i.product.id === productId
+          ? {
+              ...i,
+              unitCostUsd: Math.round(i.unitCostUsd * 100) / 100,
+              costUsdText: (Math.round(i.unitCostUsd * 100) / 100).toFixed(2),
+              costVesText: ((Math.round(i.unitCostUsd * 100) / 100) * rate).toFixed(2),
+            }
+          : i
+      )
     );
   };
 
   const updateItemCostVes = (productId: number, rawVes: string) => {
-    const valVes = rawVes === '' ? 0 : Math.max(0, Number(rawVes) || 0);
-    const valUsd = Math.round((valVes / rate) * 10000) / 10000;
+    const cleaned = sanitizeDecimalTyping(rawVes);
+    const valVes = parseDecimalInput(cleaned);
+    const valUsd = rate > 0 ? Math.round((valVes / rate) * 10000) / 10000 : 0;
     setItems((prev) =>
-      prev.map((i) => (i.product.id === productId ? { ...i, unitCostUsd: valUsd } : i))
+      prev.map((i) =>
+        i.product.id === productId
+          ? {
+              ...i,
+              unitCostUsd: valUsd,
+              costVesText: cleaned,
+              costUsdText: cleaned === '' ? '' : valUsd.toFixed(2),
+            }
+          : i
+      )
+    );
+  };
+
+  const blurItemCostVes = (productId: number) => {
+    setItems((prev) =>
+      prev.map((i) => {
+        if (i.product.id !== productId) return i;
+        const valVes = parseDecimalInput(i.costVesText);
+        const valUsd = rate > 0 ? Math.round((valVes / rate) * 10000) / 10000 : 0;
+        return {
+          ...i,
+          unitCostUsd: valUsd,
+          costVesText: valVes.toFixed(2),
+          costUsdText: valUsd.toFixed(2),
+        };
+      })
     );
   };
 
   const updateItemSalePriceUsd = (productId: number, rawUsd: string) => {
-    const val = rawUsd === '' ? 0 : Math.max(0, Number(rawUsd) || 0);
+    const cleaned = sanitizeDecimalTyping(rawUsd);
+    const val = Math.round(parseDecimalInput(cleaned) * 100) / 100;
     setItems((prev) =>
-      prev.map((i) => (i.product.id === productId ? { ...i, newPriceUsd: val } : i))
+      prev.map((i) =>
+        i.product.id === productId
+          ? { ...i, newPriceUsd: val, priceUsdText: cleaned }
+          : i
+      )
+    );
+  };
+
+  const blurItemSalePriceUsd = (productId: number) => {
+    setItems((prev) =>
+      prev.map((i) =>
+        i.product.id === productId
+          ? {
+              ...i,
+              newPriceUsd: Math.round(i.newPriceUsd * 100) / 100,
+              priceUsdText: (Math.round(i.newPriceUsd * 100) / 100).toFixed(2),
+            }
+          : i
+      )
     );
   };
 
@@ -1424,7 +1534,6 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
                   </tr>
                 ) : (
                   items.map((item) => {
-                    const unitCostVes = Math.round(item.unitCostUsd * rate * 100) / 100;
                     const subtotalUsd = Math.round(item.quantity * item.unitCostUsd * 100) / 100;
                     const subtotalVes = Math.round(subtotalUsd * rate * 100) / 100;
                     const resultingStock = Math.round((item.product.stock + item.quantity) * 100) / 100;
@@ -1452,12 +1561,13 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
                               <Minus className="w-3.5 h-3.5" />
                             </button>
                             <input
-                              type="number"
-                              min="0.1"
-                              step="any"
-                              value={item.quantity}
-                              onChange={(e) => updateItemQty(item.product.id, Number(e.target.value))}
-                              className="w-16 h-7 px-1 text-center bg-white dark:bg-[#12161d] border border-slate-200 dark:border-[#2d3748] rounded font-mono font-bold text-xs text-slate-900 dark:text-slate-100 tabular-nums"
+                              type="text"
+                              inputMode="decimal"
+                              value={item.qtyText}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onChange={(e) => updateItemQtyText(item.product.id, e.target.value)}
+                              onBlur={() => blurItemQty(item.product.id)}
+                              className="w-16 h-7 px-1 text-center bg-white dark:bg-[#12161d] border border-slate-200 dark:border-[#2d3748] rounded font-mono font-bold text-xs text-slate-900 dark:text-slate-100 tabular-nums focus:outline-hidden focus:border-emerald-500"
                             />
                             <button
                               type="button"
@@ -1470,32 +1580,38 @@ export const MerchandiseEntry: React.FC<MerchandiseEntryProps> = ({
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={unitCostVes}
+                            type="text"
+                            inputMode="decimal"
+                            value={item.costVesText}
+                            onFocus={(e) => e.currentTarget.select()}
                             onChange={(e) => updateItemCostVes(item.product.id, e.target.value)}
-                            className="w-28 h-7 px-2 text-right bg-white dark:bg-[#12161d] border border-slate-200 dark:border-[#2d3748] rounded font-mono font-bold text-xs text-slate-900 dark:text-slate-100 tabular-nums"
+                            onBlur={() => blurItemCostVes(item.product.id)}
+                            placeholder="0.00"
+                            className="w-28 h-7 px-2 text-right bg-white dark:bg-[#12161d] border border-slate-200 dark:border-[#2d3748] rounded font-mono font-bold text-xs text-slate-900 dark:text-slate-100 tabular-nums focus:outline-hidden focus:border-emerald-500"
                           />
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={item.unitCostUsd}
+                            type="text"
+                            inputMode="decimal"
+                            value={item.costUsdText}
+                            onFocus={(e) => e.currentTarget.select()}
                             onChange={(e) => updateItemCostUsd(item.product.id, e.target.value)}
-                            className="w-20 h-7 px-2 text-right bg-white dark:bg-[#12161d] border border-slate-200 dark:border-[#2d3748] rounded font-mono text-xs text-slate-700 dark:text-slate-300 tabular-nums"
+                            onBlur={() => blurItemCostUsd(item.product.id)}
+                            placeholder="0.00"
+                            className="w-24 h-7 px-2 text-right bg-white dark:bg-[#12161d] border border-slate-200 dark:border-[#2d3748] rounded font-mono font-semibold text-xs text-slate-900 dark:text-slate-100 tabular-nums focus:outline-hidden focus:border-emerald-500"
                           />
                         </td>
                         <td className="py-2.5 px-3 text-right">
                           <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={item.newPriceUsd}
+                            type="text"
+                            inputMode="decimal"
+                            value={item.priceUsdText}
+                            onFocus={(e) => e.currentTarget.select()}
                             onChange={(e) => updateItemSalePriceUsd(item.product.id, e.target.value)}
-                            className="w-20 h-7 px-2 text-right bg-white dark:bg-[#12161d] border border-emerald-300 dark:border-emerald-800/80 rounded font-mono text-xs text-emerald-800 dark:text-emerald-300 tabular-nums"
+                            onBlur={() => blurItemSalePriceUsd(item.product.id)}
+                            placeholder="0.00"
+                            className="w-24 h-7 px-2 text-right bg-white dark:bg-[#12161d] border border-emerald-300 dark:border-emerald-800/80 rounded font-mono font-semibold text-xs text-emerald-800 dark:text-emerald-300 tabular-nums focus:outline-hidden focus:border-emerald-500"
                             title="Actualizar precio de venta al público (opcional)"
                           />
                           <div className="text-[10px] font-mono text-slate-400">

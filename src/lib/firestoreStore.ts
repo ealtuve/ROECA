@@ -7,9 +7,10 @@ import {
   updateDoc,
   deleteDoc,
   query,
-  where,
+  limit,
   serverTimestamp,
   Timestamp,
+  writeBatch,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebase.ts';
 import { MERIDA_TUCANI_SEED } from './venezuelaGeo.ts';
@@ -33,6 +34,15 @@ const normalizeText = (str: string) =>
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .trim();
+
+const cleanProductCode = (val: unknown): string =>
+  String(val ?? '')
+    .trim()
+    .replace(/^['´`’‘ʼ′ʹ"“”\u00B4\u02B9\u02BC\u2018\u2019\u2032]+/, '')
+    .trim();
+
+const normalizeProductName = (val: unknown): string =>
+  normalizeText(String(val ?? '')).replace(/\s+/g, ' ');
 
 const truncate = (val: unknown, maxLen: number): string | null => {
   if (val === undefined || val === null) return null;
@@ -190,7 +200,7 @@ function sanitizeUser(u: any): UserProfile {
 
 async function listCollection<T extends { id: number }>(colName: ColName): Promise<Array<T & { _docId: string }>> {
   requireUid();
-  const q = query(collection(db, colName), where('id', '>=', 1));
+  const q = query(collection(db, colName), limit(5000));
 
   const mapSnap = (snap: any) =>
     snap.docs.map((d: any) => {
@@ -1138,15 +1148,15 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
     }
 
     if (path === '/api/products' && method === 'POST') {
-      const code = reqStr(body.code, 64);
+      const code = reqStr(cleanProductCode(body.code), 64);
       const name = reqStr(body.name, 200);
       if (!code || !name || body.priceUsd === undefined) {
         return jsonResp({ error: 'Código, nombre y precio son obligatorios' }, 400);
       }
       const list = await listCollection<any>('products');
-      const dupCode = list.find((p) => normalizeText(p.code) === normalizeText(code));
+      const dupCode = list.find((p) => normalizeText(cleanProductCode(p.code)) === normalizeText(code));
       if (dupCode) return jsonResp({ error: `El código "${code}" ya pertenece a "${dupCode.name}".` }, 400);
-      const dupName = list.find((p) => normalizeText(p.name) === normalizeText(name));
+      const dupName = list.find((p) => normalizeProductName(p.name) === normalizeProductName(name));
       if (dupName) return jsonResp({ error: `Ya existe un producto llamado "${name}" (${dupName.code}).` }, 400);
 
       const created = await createDoc('products', nextIdFrom(list), {
@@ -1155,14 +1165,337 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
         description: truncate(body.description, 400),
         categoryId: body.categoryId ? Number(body.categoryId) : null,
         unit: reqStr(body.unit, 40, 'unidad'),
-        costUsd: Math.max(0, Number(body.costUsd) || 0),
-        priceUsd: Math.max(0, Number(body.priceUsd) || 0),
+        costUsd: Math.round(Math.max(0, Number(body.costUsd) || 0) * 100) / 100,
+        priceUsd: Math.round(Math.max(0, Number(body.priceUsd) || 0) * 100) / 100,
         stock: Math.max(0, Number(body.stock) || 0),
         minStock: Math.max(0, Number(body.minStock) || 10),
         branchId: body.branchId ? Number(body.branchId) : 1,
         imageUrl: truncate(body.imageUrl, 500),
       });
       return jsonResp(created, 201);
+    }
+
+    if (path === '/api/products/bulk-import' && method === 'POST') {
+      const items: any[] = Array.isArray(body.items) ? body.items : [];
+      if (items.length === 0) {
+        return jsonResp({ error: 'No se recibieron productos para importar.' }, 400);
+      }
+
+      const mode: 'upsert' | 'skip_existing' =
+        body.mode === 'skip_existing' ? 'skip_existing' : 'upsert';
+      const defaultBranchId = body.branchId ? Number(body.branchId) : 1;
+      const defaultCategoryId = body.defaultCategoryId ? Number(body.defaultCategoryId) : null;
+      const uid = requireUid();
+
+      const [existingProducts, existingCategories] = await Promise.all([
+        listCollection<any>('products'),
+        listCollection<any>('categories'),
+      ]);
+
+      // Map existing products by normalized clean code and normalized description
+      const prodByCode = new Map<string, any>();
+      const prodByName = new Map<string, any>();
+      for (const p of existingProducts) {
+        const cKey = normalizeText(cleanProductCode(p.code));
+        if (cKey && !prodByCode.has(cKey)) prodByCode.set(cKey, p);
+        const nKey = normalizeProductName(p.name);
+        if (nKey && !prodByName.has(nKey)) prodByName.set(nKey, p);
+      }
+
+      // Map existing categories by normalized name
+      const catByName = new Map<string, number>();
+      for (const c of existingCategories) {
+        catByName.set(normalizeText(c.name), c.id);
+      }
+      let nextCatId = nextIdFrom(existingCategories);
+      const newCategoryOps: Array<{ docId: string; data: Record<string, any> }> = [];
+
+      const resolveCategoryId = (rawCatName: unknown): number | null => {
+        const cleaned = truncate(rawCatName, 120);
+        if (!cleaned) return defaultCategoryId;
+        const key = normalizeText(cleaned);
+        if (catByName.has(key)) return catByName.get(key)!;
+        const newId = nextCatId++;
+        catByName.set(key, newId);
+        newCategoryOps.push({
+          docId: docIdFor('categories', uid, newId),
+          data: {
+            id: newId,
+            name: cleaned,
+            description: null,
+            ownerUid: uid,
+            createdAt: serverTimestamp(),
+          },
+        });
+        return newId;
+      };
+
+      // Deduplicate within the uploaded file:
+      // 1) Strip leading apostrophes from code
+      // 2) Keep only ONE row per unique code and per unique description
+      const dedupedItems: any[] = [];
+      const seenCodes = new Set<string>();
+      const seenNames = new Set<string>();
+      let skipped = 0;
+
+      for (const raw of items) {
+        const code = reqStr(cleanProductCode(raw?.code), 64);
+        const name = reqStr(raw?.name, 200);
+        if (!code || !name) {
+          skipped++;
+          continue;
+        }
+        const codeKey = normalizeText(code);
+        const nameKey = normalizeProductName(name);
+        if (seenCodes.has(codeKey) || seenNames.has(nameKey)) {
+          skipped++;
+          continue;
+        }
+        seenCodes.add(codeKey);
+        seenNames.add(nameKey);
+        dedupedItems.push({ ...raw, code, name });
+      }
+
+      let nextProdId = nextIdFrom(existingProducts);
+      let created = 0;
+      let updated = 0;
+      const touchedExistingDocIds = new Set<string>();
+
+      type BatchOp =
+        | { type: 'set'; col: ColName; docId: string; data: Record<string, any> }
+        | { type: 'update'; col: ColName; docId: string; data: Record<string, any> };
+
+      const ops: BatchOp[] = [];
+
+      for (const item of dedupedItems) {
+        const code = reqStr(cleanProductCode(item.code), 64);
+        const name = reqStr(item.name, 200);
+        const codeKey = normalizeText(code);
+        const nameKey = normalizeProductName(name);
+        const costUsd = Math.max(0, Number(item.costUsd) || 0);
+        const priceUsd = Math.max(0, Number(item.priceUsd) || 0);
+        const hasStock = item.stock !== undefined && item.stock !== null && item.stock !== '';
+        const hasMinStock = item.minStock !== undefined && item.minStock !== null && item.minStock !== '';
+        const hasUnit = item.unit !== undefined && item.unit !== null && String(item.unit).trim() !== '';
+        const hasCategory = item.categoryName !== undefined && item.categoryName !== null && String(item.categoryName).trim() !== '';
+        const hasDescription = item.description !== undefined && item.description !== null && String(item.description).trim() !== '';
+
+        const existingByCode = prodByCode.get(codeKey);
+        const existingByName = prodByName.get(nameKey);
+        const existing = existingByCode || existingByName;
+
+        if (existing) {
+          if (mode === 'skip_existing' || touchedExistingDocIds.has(existing._docId)) {
+            skipped++;
+            continue;
+          }
+          touchedExistingDocIds.add(existing._docId);
+          const updates: Record<string, any> = {
+            name,
+            costUsd: Math.round(costUsd * 100) / 100,
+            priceUsd: Math.round(priceUsd * 100) / 100,
+            updatedAt: serverTimestamp(),
+          };
+          // Also clean leading apostrophe if the stored code had one
+          const existingCleanCode = reqStr(cleanProductCode(existing.code), 64);
+          if (existingCleanCode && existingCleanCode !== existing.code) {
+            updates.code = existingCleanCode;
+          }
+          if (hasStock) updates.stock = Math.max(0, Number(item.stock) || 0);
+          if (hasMinStock) updates.minStock = Math.max(0, Number(item.minStock) || 0);
+          if (hasUnit) updates.unit = reqStr(item.unit, 40, existing.unit || 'unidad');
+          if (hasCategory) updates.categoryId = resolveCategoryId(item.categoryName);
+          if (hasDescription) updates.description = truncate(item.description, 400);
+
+          ops.push({
+            type: 'update',
+            col: 'products',
+            docId: existing._docId,
+            data: updates,
+          });
+          updated++;
+        } else {
+          const newId = nextProdId++;
+          const resolvedCatId = hasCategory ? resolveCategoryId(item.categoryName) : defaultCategoryId;
+          const docData: Record<string, any> = {
+            id: newId,
+            code,
+            name,
+            description: hasDescription ? truncate(item.description, 400) : null,
+            categoryId: resolvedCatId,
+            unit: hasUnit ? reqStr(item.unit, 40, 'unidad') : 'unidad',
+            costUsd: Math.round(costUsd * 100) / 100,
+            priceUsd: Math.round(priceUsd * 100) / 100,
+            stock: hasStock ? Math.max(0, Number(item.stock) || 0) : 0,
+            minStock: hasMinStock ? Math.max(0, Number(item.minStock) || 10) : 10,
+            branchId: defaultBranchId,
+            imageUrl: null,
+            ownerUid: uid,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          };
+          ops.push({
+            type: 'set',
+            col: 'products',
+            docId: docIdFor('products', uid, newId),
+            data: docData,
+          });
+          prodByCode.set(codeKey, docData);
+          prodByName.set(nameKey, docData);
+          created++;
+        }
+      }
+
+      // Prepend any newly created categories before products
+      const allOps: BatchOp[] = [
+        ...newCategoryOps.map((c) => ({
+          type: 'set' as const,
+          col: 'categories' as ColName,
+          docId: c.docId,
+          data: c.data,
+        })),
+        ...ops,
+      ];
+
+      // Commit in Firestore batches of 400 (safely under Firestore's 500-op batch limit)
+      const CHUNK_SIZE = 400;
+      for (let i = 0; i < allOps.length; i += CHUNK_SIZE) {
+        const chunk = allOps.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        for (const op of chunk) {
+          const ref = doc(db, op.col, op.docId);
+          if (op.type === 'set') {
+            batch.set(ref, op.data);
+          } else {
+            batch.update(ref, op.data);
+          }
+        }
+        try {
+          const commitPromise = batch.commit();
+          if (isOfflineNow()) {
+            trackPendingWrite(commitPromise);
+          } else {
+            await commitPromise;
+            markSyncedNow();
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'products/bulk-import');
+        }
+      }
+
+      await recordAuditLog(
+        'Importación masiva de inventario',
+        'inventory',
+        `Archivo procesado: ${created} productos nuevos, ${updated} actualizados, ${skipped} omitidos.`
+      );
+
+      return jsonResp({
+        created,
+        updated,
+        skipped,
+        categoriesCreated: newCategoryOps.length,
+        totalProcessed: created + updated,
+      });
+    }
+
+    if (path === '/api/products/cleanup' && method === 'POST') {
+      const existingProducts = await listCollection<any>('products');
+
+      // Group products by normalized description and keep only ONE per description
+      const groupsByName = new Map<string, any[]>();
+      for (const p of existingProducts) {
+        const nKey = normalizeProductName(p.name) || `__id_${p.id}`;
+        const arr = groupsByName.get(nKey) || [];
+        arr.push(p);
+        groupsByName.set(nKey, arr);
+      }
+
+      type CleanupOp =
+        | { type: 'update'; docId: string; data: Record<string, any> }
+        | { type: 'delete'; docId: string };
+
+      const ops: CleanupOp[] = [];
+      let cleanedCodes = 0;
+      let removedDuplicates = 0;
+      const usedCleanCodes = new Set<string>();
+
+      for (const group of groupsByName.values()) {
+        // Choose the best record to keep: highest stock, then clean code (without leading '), then lowest ID
+        group.sort((a, b) => {
+          const stockDiff = (Number(b.stock) || 0) - (Number(a.stock) || 0);
+          if (stockDiff !== 0) return stockDiff;
+          const aClean = cleanProductCode(a.code) === String(a.code || '').trim() ? 1 : 0;
+          const bClean = cleanProductCode(b.code) === String(b.code || '').trim() ? 1 : 0;
+          if (bClean !== aClean) return bClean - aClean;
+          return (Number(a.id) || 0) - (Number(b.id) || 0);
+        });
+
+        const keeper = group[0];
+        const duplicates = group.slice(1);
+
+        for (const dup of duplicates) {
+          ops.push({ type: 'delete', docId: dup._docId });
+          removedDuplicates++;
+        }
+
+        const rawCode = String(keeper.code || '');
+        const cleaned = reqStr(cleanProductCode(rawCode), 64);
+        const cleanKey = normalizeText(cleaned);
+
+        if (cleaned && cleaned !== rawCode && !usedCleanCodes.has(cleanKey)) {
+          ops.push({
+            type: 'update',
+            docId: keeper._docId,
+            data: {
+              code: cleaned,
+              updatedAt: serverTimestamp(),
+            },
+          });
+          cleanedCodes++;
+          usedCleanCodes.add(cleanKey);
+        } else if (cleanKey) {
+          usedCleanCodes.add(cleanKey);
+        }
+      }
+
+      const CHUNK_SIZE = 400;
+      for (let i = 0; i < ops.length; i += CHUNK_SIZE) {
+        const chunk = ops.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        for (const op of chunk) {
+          const ref = doc(db, 'products', op.docId);
+          if (op.type === 'update') {
+            batch.update(ref, op.data);
+          } else {
+            batch.delete(ref);
+          }
+        }
+        try {
+          const commitPromise = batch.commit();
+          if (isOfflineNow()) {
+            trackPendingWrite(commitPromise);
+          } else {
+            await commitPromise;
+            markSyncedNow();
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.WRITE, 'products/cleanup');
+        }
+      }
+
+      if (cleanedCodes > 0 || removedDuplicates > 0) {
+        await recordAuditLog(
+          'Limpieza de códigos y duplicados de inventario',
+          'inventory',
+          `Códigos limpiados (sin '): ${cleanedCodes} · Productos con descripción repetida eliminados: ${removedDuplicates}`
+        );
+      }
+
+      return jsonResp({
+        cleanedCodes,
+        removedDuplicates,
+        totalFixed: cleanedCodes + removedDuplicates,
+      });
     }
 
     const prodMatch = path.match(/^\/api\/products\/(\d+)$/);
@@ -1175,8 +1508,8 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
       if (method === 'PUT') {
         const updates: Record<string, any> = {};
         if (body.code !== undefined) {
-          const code = reqStr(body.code, 64);
-          if (list.some((p) => p.id !== id && normalizeText(p.code) === normalizeText(code))) {
+          const code = reqStr(cleanProductCode(body.code), 64);
+          if (list.some((p) => p.id !== id && normalizeText(cleanProductCode(p.code)) === normalizeText(code))) {
             return jsonResp({ error: `El código "${code}" ya está asignado a otro producto.` }, 400);
           }
           updates.code = code;
@@ -1185,8 +1518,8 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
         if (body.description !== undefined) updates.description = truncate(body.description, 400);
         if (body.categoryId !== undefined) updates.categoryId = body.categoryId ? Number(body.categoryId) : null;
         if (body.unit !== undefined) updates.unit = reqStr(body.unit, 40, 'unidad');
-        if (body.costUsd !== undefined) updates.costUsd = Math.max(0, Number(body.costUsd) || 0);
-        if (body.priceUsd !== undefined) updates.priceUsd = Math.max(0, Number(body.priceUsd) || 0);
+        if (body.costUsd !== undefined) updates.costUsd = Math.round(Math.max(0, Number(body.costUsd) || 0) * 100) / 100;
+        if (body.priceUsd !== undefined) updates.priceUsd = Math.round(Math.max(0, Number(body.priceUsd) || 0) * 100) / 100;
         if (body.stock !== undefined) updates.stock = Math.max(0, Number(body.stock) || 0);
         if (body.minStock !== undefined) updates.minStock = Math.max(0, Number(body.minStock) || 0);
         if (body.branchId !== undefined) updates.branchId = body.branchId ? Number(body.branchId) : null;
@@ -1235,6 +1568,7 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
           creditEnabled: c.creditEnabled !== undefined ? Boolean(c.creditEnabled) : true,
           creditDays: Number(c.creditDays) || 7,
           isSuspended: Boolean(c.isSuspended),
+          useCostPrice: Boolean(c.useCostPrice),
           creditRating: computed,
         };
       });
@@ -1295,6 +1629,7 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
         creditEnabled,
         creditDays,
         isSuspended: Boolean(body.isSuspended),
+        useCostPrice: Boolean(body.useCostPrice),
         creditRating: 'nuevo',
         onTimePaymentsCount: 0,
         latePaymentsCount: 0,
@@ -1350,6 +1685,7 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
           updates.creditLimitUsd = Math.max(0, Number(body.creditLimitUsd) || 0);
         }
         if (body.isSuspended !== undefined) updates.isSuspended = Boolean(body.isSuspended);
+        if (body.useCostPrice !== undefined) updates.useCostPrice = Boolean(body.useCostPrice);
         if (body.creditRating !== undefined && ['nuevo', 'excelente', 'regular', 'malo'].includes(body.creditRating)) {
           updates.creditRating = body.creditRating;
         }
@@ -2004,10 +2340,10 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
         if (prod) {
           const upd: Record<string, any> = {
             stock: Math.round((prod.stock + qty) * 100) / 100,
-            costUsd: unitCost > 0 ? unitCost : prod.costUsd,
+            costUsd: unitCost > 0 ? Math.round(unitCost * 100) / 100 : prod.costUsd,
           };
           if (item.newPriceUsd !== undefined && Number(item.newPriceUsd) > 0) {
-            upd.priceUsd = Number(item.newPriceUsd);
+            upd.priceUsd = Math.round(Number(item.newPriceUsd) * 100) / 100;
           }
           await patchDoc('products', prod._docId, upd);
         }
@@ -2354,11 +2690,22 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
     }
 
     // ---------------------------------------------------------------------
-    // 11. DASHBOARD STATS
+    // 11. DASHBOARD STATS (EXECUTIVE METRICS & ALERTS)
     // ---------------------------------------------------------------------
     if (path === '/api/dashboard/stats' && method === 'GET') {
-      const [salesList, clientsList, suppliersList, prodsList, paymentsList, currentRate] = await Promise.all([
+      const [
+        salesList,
+        saleItemsList,
+        purchasesList,
+        clientsList,
+        suppliersList,
+        prodsList,
+        paymentsList,
+        currentRate,
+      ] = await Promise.all([
         listCollection<any>('sales'),
+        listCollection<any>('saleItems'),
+        listCollection<any>('purchases'),
         listCollection<any>('clients'),
         listCollection<any>('suppliers'),
         listCollection<any>('products'),
@@ -2369,20 +2716,236 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
       const today = todayStr();
       const ym = today.substring(0, 7);
       const cliMap = new Map(clientsList.map((c) => [c.id, c]));
+      const supMap = new Map(suppliersList.map((s) => [s.id, s]));
+      const prodMap = new Map(prodsList.map((p) => [p.id, p]));
 
-      const salesToday = salesList.filter((s) => s.date === today);
-      const salesMonth = salesList.filter((s) => String(s.date).startsWith(ym));
+      // Exclude annulled sales from revenue and profit calculations
+      const validSales = salesList.filter((s) => s.status !== 'anulada');
+      const salesToday = validSales.filter((s) => s.date === today);
+      const salesMonth = validSales.filter((s) => String(s.date).startsWith(ym));
 
-      const salesTodayUsd = salesToday.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0);
-      const salesMonthUsd = salesMonth.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0);
+      const salesTodayUsd = Math.round(salesToday.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0) * 100) / 100;
+      const salesMonthUsd = Math.round(salesMonth.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0) * 100) / 100;
 
-      const cxcTotalUsd = clientsList.reduce((acc, c) => acc + (Number(c.currentBalanceUsd) || 0), 0);
+      // Group sale items by saleId for fast COGS and top-product calculations
+      const itemsBySaleId = new Map<number, any[]>();
+      for (const it of saleItemsList) {
+        const sid = Number(it.saleId);
+        const bucket = itemsBySaleId.get(sid);
+        if (bucket) bucket.push(it);
+        else itemsBySaleId.set(sid, [it]);
+      }
+
+      // Compute COGS & net profit for today and current month
+      const computeSalesCogs = (targetSales: any[]): number => {
+        let cogs = 0;
+        for (const s of targetSales) {
+          const sItems = itemsBySaleId.get(Number(s.id)) || [];
+          for (const it of sItems) {
+            const prod = prodMap.get(Number(it.productId));
+            const qty = Number(it.quantity) || 0;
+            const unitCost = Number(prod?.costUsd) || 0;
+            cogs += qty * unitCost;
+          }
+        }
+        return Math.round(cogs * 100) / 100;
+      };
+
+      const cogsTodayUsd = computeSalesCogs(salesToday);
+      const netProfitTodayUsd = Math.round((salesTodayUsd - cogsTodayUsd) * 100) / 100;
+
+      const cogsMonthUsd = computeSalesCogs(salesMonth);
+      const netProfitMonthUsd = Math.round((salesMonthUsd - cogsMonthUsd) * 100) / 100;
+      const netProfitMarginPct =
+        salesMonthUsd > 0 ? Math.round((netProfitMonthUsd / salesMonthUsd) * 1000) / 10 : 0;
+
+      // Best-selling products (prefer current month; fall back to historical if no items this month)
+      const aggregateTopProducts = (targetSales: any[]) => {
+        const agg = new Map<
+          string,
+          {
+            productId: number;
+            productCode: string;
+            productName: string;
+            unit: string;
+            unitsSold: number;
+            revenueUsd: number;
+            profitUsd: number;
+            currentStock: number;
+          }
+        >();
+
+        for (const s of targetSales) {
+          const sItems = itemsBySaleId.get(Number(s.id)) || [];
+          for (const it of sItems) {
+            const pid = Number(it.productId) || 0;
+            const prod = prodMap.get(pid);
+            const code = prod?.code || cleanProductCode(it.productCode || `SKU-${pid}`);
+            const key = pid > 0 ? `id:${pid}` : `code:${normalizeText(code)}`;
+            const cleanName = prod?.name || String(it.productName || 'Producto').replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+            const qty = Number(it.quantity) || 0;
+            const rev = Number(it.subtotalUsd) || qty * (Number(it.unitPriceUsd) || 0);
+            const cost = qty * (Number(prod?.costUsd) || 0);
+            const prof = rev - cost;
+
+            const existing = agg.get(key);
+            if (existing) {
+              existing.unitsSold = Math.round((existing.unitsSold + qty) * 100) / 100;
+              existing.revenueUsd = Math.round((existing.revenueUsd + rev) * 100) / 100;
+              existing.profitUsd = Math.round((existing.profitUsd + prof) * 100) / 100;
+            } else {
+              agg.set(key, {
+                productId: pid,
+                productCode: code,
+                productName: cleanName,
+                unit: prod?.unit || 'Unidad',
+                unitsSold: Math.round(qty * 100) / 100,
+                revenueUsd: Math.round(rev * 100) / 100,
+                profitUsd: Math.round(prof * 100) / 100,
+                currentStock: Number(prod?.stock) || 0,
+              });
+            }
+          }
+        }
+
+        return Array.from(agg.values()).sort(
+          (a, b) => b.unitsSold - a.unitsSold || b.revenueUsd - a.revenueUsd
+        );
+      };
+
+      const monthTopProducts = aggregateTopProducts(salesMonth);
+      const topProductScope: 'mes' | 'historico' = monthTopProducts.length > 0 ? 'mes' : 'historico';
+      const topProducts = (monthTopProducts.length > 0 ? monthTopProducts : aggregateTopProducts(validSales)).slice(0, 5);
+      const topProduct = topProducts[0] || null;
+
+      // Low-stock inventory alerts (sorted: out-of-stock first, then steepest deficit ratio)
+      const lowStockAll = prodsList
+        .filter((p) => (Number(p.stock) || 0) <= (Number(p.minStock) || 0))
+        .map((p) => {
+          const stock = Number(p.stock) || 0;
+          const minStock = Number(p.minStock) || 0;
+          return {
+            id: p.id,
+            code: p.code,
+            name: p.name,
+            unit: p.unit || 'Unidad',
+            stock,
+            minStock,
+            costUsd: Number(p.costUsd) || 0,
+            priceUsd: Number(p.priceUsd) || 0,
+            deficit: Math.max(0, Math.round((minStock - stock) * 100) / 100),
+          };
+        })
+        .sort((a, b) => {
+          const aZero = a.stock <= 0 ? 0 : 1;
+          const bZero = b.stock <= 0 ? 0 : 1;
+          if (aZero !== bZero) return aZero - bZero;
+          const aRatio = a.stock / Math.max(1, a.minStock);
+          const bRatio = b.stock / Math.max(1, b.minStock);
+          return aRatio - bRatio || b.deficit - a.deficit;
+        });
+
+      const lowStockCount = lowStockAll.length;
+      const outOfStockCount = lowStockAll.filter((p) => p.stock <= 0).length;
+      const lowStockProducts = lowStockAll.slice(0, 12);
+
+      // Accounts Receivable (CxC) approaching due date or overdue
+      const openReceivables = validSales
+        .filter((s) => (Number(s.balanceDueUsd) || 0) > 0.01)
+        .map((s) => {
+          const cl = cliMap.get(s.clientId);
+          const dueDate = s.dueDate || addDaysToDateStr(s.date, Number(cl?.creditDays) || 7);
+          const daysUntilDue = daysBetween(today, dueDate);
+          return {
+            id: s.id,
+            invoiceNumber: s.invoiceNumber,
+            clientId: s.clientId,
+            clientName: cl?.name || 'Cliente',
+            date: s.date,
+            dueDate,
+            daysUntilDue,
+            totalUsd: Number(s.totalUsd) || 0,
+            balanceDueUsd: Math.round((Number(s.balanceDueUsd) || 0) * 100) / 100,
+            status: s.status,
+          };
+        })
+        .sort((a, b) => a.daysUntilDue - b.daysUntilDue || b.balanceDueUsd - a.balanceDueUsd);
+
+      const overdueReceivables = openReceivables.filter((r) => r.daysUntilDue < 0);
+      const dueSoonReceivables = openReceivables.filter((r) => r.daysUntilDue >= 0 && r.daysUntilDue <= 7);
+      const cxcOverdueCount = overdueReceivables.length;
+      const cxcOverdueUsd = Math.round(overdueReceivables.reduce((acc, r) => acc + r.balanceDueUsd, 0) * 100) / 100;
+      const cxcDueSoonCount = dueSoonReceivables.length;
+      const cxcDueSoonUsd = Math.round(dueSoonReceivables.reduce((acc, r) => acc + r.balanceDueUsd, 0) * 100) / 100;
+      const upcomingReceivables = openReceivables.slice(0, 12);
+
+      // Accounts Payable (CxP) approaching due date or overdue
+      const openPayables = purchasesList
+        .filter((p) => p.status !== 'anulada' && (Number(p.balanceDueUsd) || 0) > 0.01)
+        .map((p) => {
+          const sup = supMap.get(p.supplierId);
+          const hasExplicitDueDate = Boolean(p.dueDate);
+          const dueDate = p.dueDate || addDaysToDateStr(p.date, 15);
+          const daysUntilDue = daysBetween(today, dueDate);
+          return {
+            id: p.id,
+            invoiceNumber: p.invoiceNumber,
+            supplierId: p.supplierId,
+            supplierName: sup?.name || 'Proveedor',
+            date: p.date,
+            dueDate,
+            daysUntilDue,
+            totalUsd: Number(p.totalUsd) || 0,
+            balanceDueUsd: Math.round((Number(p.balanceDueUsd) || 0) * 100) / 100,
+            status: p.status,
+            isEstimatedDueDate: !hasExplicitDueDate,
+          };
+        })
+        .sort((a, b) => a.daysUntilDue - b.daysUntilDue || b.balanceDueUsd - a.balanceDueUsd);
+
+      const overduePayables = openPayables.filter((p) => p.daysUntilDue < 0);
+      const dueSoonPayables = openPayables.filter((p) => p.daysUntilDue >= 0 && p.daysUntilDue <= 7);
+      const cxpOverdueCount = overduePayables.length;
+      const cxpOverdueUsd = Math.round(overduePayables.reduce((acc, p) => acc + p.balanceDueUsd, 0) * 100) / 100;
+      const cxpDueSoonCount = dueSoonPayables.length;
+      const cxpDueSoonUsd = Math.round(dueSoonPayables.reduce((acc, p) => acc + p.balanceDueUsd, 0) * 100) / 100;
+      const upcomingPayables = openPayables.slice(0, 12);
+
+      // 14-day revenue & net profit trend
+      const dailyTrend: Array<{ date: string; label: string; salesUsd: number; profitUsd: number; count: number }> = [];
+      const baseDate = new Date(`${today}T12:00:00Z`);
+      const salesByDate = new Map<string, any[]>();
+      for (const s of validSales) {
+        const dKey = String(s.date || '').slice(0, 10);
+        const bucket = salesByDate.get(dKey);
+        if (bucket) bucket.push(s);
+        else salesByDate.set(dKey, [s]);
+      }
+
+      for (let i = 13; i >= 0; i--) {
+        const d = new Date(baseDate.getTime());
+        d.setUTCDate(d.getUTCDate() - i);
+        const iso = d.toISOString().split('T')[0];
+        const dayNum = String(d.getUTCDate()).padStart(2, '0');
+        const monthShort = d.toLocaleDateString('es-VE', { month: 'short', timeZone: 'UTC' }).replace('.', '');
+        const daySales = salesByDate.get(iso) || [];
+        const dayTotalUsd = Math.round(daySales.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0) * 100) / 100;
+        const dayCogsUsd = computeSalesCogs(daySales);
+        const dayProfitUsd = Math.round((dayTotalUsd - dayCogsUsd) * 100) / 100;
+        dailyTrend.push({
+          date: iso,
+          label: `${dayNum} ${monthShort}`,
+          salesUsd: dayTotalUsd,
+          profitUsd: dayProfitUsd,
+          count: daySales.length,
+        });
+      }
+
+      const cxcTotalUsd = Math.round(clientsList.reduce((acc, c) => acc + (Number(c.currentBalanceUsd) || 0), 0) * 100) / 100;
       const cxcDebtorsCount = clientsList.filter((c) => c.currentBalanceUsd > 0.05).length;
 
-      const cxpTotalUsd = suppliersList.reduce((acc, s) => acc + (Number(s.currentBalanceUsd) || 0), 0);
+      const cxpTotalUsd = Math.round(suppliersList.reduce((acc, s) => acc + (Number(s.currentBalanceUsd) || 0), 0) * 100) / 100;
       const cxpCreditorsCount = suppliersList.filter((s) => s.currentBalanceUsd > 0.05).length;
-
-      const lowStockCount = prodsList.filter((p) => p.stock <= p.minStock).length;
 
       const incomePays = paymentsList.filter((p) => p.type === 'cliente_abono');
       const expensePays = paymentsList.filter((p) => p.type === 'proveedor_pago');
@@ -2422,12 +2985,33 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
       return jsonResp({
         salesTodayUsd,
         salesTodayCount: salesToday.length,
+        netProfitTodayUsd,
         salesMonthUsd,
+        salesMonthCount: salesMonth.length,
+        cogsMonthUsd,
+        netProfitMonthUsd,
+        netProfitMarginPct,
+        topProductScope,
+        topProduct,
+        topProducts,
         cxcTotalUsd,
         cxcDebtorsCount,
+        cxcOverdueCount,
+        cxcOverdueUsd,
+        cxcDueSoonCount,
+        cxcDueSoonUsd,
+        upcomingReceivables,
         cxpTotalUsd,
         cxpCreditorsCount,
+        cxpOverdueCount,
+        cxpOverdueUsd,
+        cxpDueSoonCount,
+        cxpDueSoonUsd,
+        upcomingPayables,
         lowStockCount,
+        outOfStockCount,
+        lowStockProducts,
+        dailyTrend,
         incomeUsd,
         incomeVes,
         expenseUsd,
@@ -2436,6 +3020,238 @@ async function handleApiRequest(urlStr: string, init?: RequestInit): Promise<Res
         recentSales,
         recentPayments,
         currentExchangeRate: currentRate,
+      });
+    }
+
+    // ---------------------------------------------------------------------
+    // 11B. CLIENT ANALYTICS (TOP 10 PRODUCTS PER CLIENT & MONTHLY RANKINGS)
+    // ---------------------------------------------------------------------
+    if (path === '/api/analytics/clients' && method === 'GET') {
+      const [salesList, saleItemsList, clientsList, prodsList, currentRate] = await Promise.all([
+        listCollection<any>('sales'),
+        listCollection<any>('saleItems'),
+        listCollection<any>('clients'),
+        listCollection<any>('products'),
+        getCurrentRate(),
+      ]);
+
+      const today = todayStr();
+      const currentMonth = today.substring(0, 7);
+      const requestedMonth = params.get('month') || currentMonth;
+
+      const validSales = salesList.filter((s) => s.status !== 'anulada');
+      const monthSet = new Set<string>([currentMonth]);
+      for (const s of validSales) {
+        const ym = String(s.date || '').substring(0, 7);
+        if (/^\d{4}-\d{2}$/.test(ym)) monthSet.add(ym);
+      }
+      const availableMonths = Array.from(monthSet).sort((a, b) => b.localeCompare(a));
+
+      const periodSales =
+        requestedMonth === 'all'
+          ? validSales
+          : validSales.filter((s) => String(s.date || '').startsWith(requestedMonth));
+
+      const prodMap = new Map(prodsList.map((p) => [p.id, p]));
+      const itemsBySaleId = new Map<number, any[]>();
+      for (const it of saleItemsList) {
+        const sid = Number(it.saleId);
+        const bucket = itemsBySaleId.get(sid);
+        if (bucket) bucket.push(it);
+        else itemsBySaleId.set(sid, [it]);
+      }
+
+      const buildTopProducts = (clientSales: any[], clientTotalSpend: number) => {
+        const agg = new Map<
+          string,
+          {
+            productId: number;
+            productCode: string;
+            productName: string;
+            unit: string;
+            totalQuantity: number;
+            totalSpentUsd: number;
+            saleIds: Set<number>;
+          }
+        >();
+
+        for (const s of clientSales) {
+          const sItems = itemsBySaleId.get(Number(s.id)) || [];
+          for (const it of sItems) {
+            const pid = Number(it.productId) || 0;
+            const prod = prodMap.get(pid);
+            const code = prod?.code || cleanProductCode(it.productCode || `SKU-${pid}`);
+            const key = pid > 0 ? `id:${pid}` : `code:${normalizeText(code)}`;
+            const cleanName =
+              prod?.name || String(it.productName || 'Producto').replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+            const qty = Number(it.quantity) || 0;
+            const spent = Number(it.subtotalUsd) || qty * (Number(it.unitPriceUsd) || 0);
+
+            const existing = agg.get(key);
+            if (existing) {
+              existing.totalQuantity = Math.round((existing.totalQuantity + qty) * 100) / 100;
+              existing.totalSpentUsd = Math.round((existing.totalSpentUsd + spent) * 100) / 100;
+              existing.saleIds.add(Number(s.id));
+            } else {
+              agg.set(key, {
+                productId: pid,
+                productCode: code,
+                productName: cleanName,
+                unit: prod?.unit || 'Unidad',
+                totalQuantity: Math.round(qty * 100) / 100,
+                totalSpentUsd: Math.round(spent * 100) / 100,
+                saleIds: new Set([Number(s.id)]),
+              });
+            }
+          }
+        }
+
+        return Array.from(agg.values())
+          .sort((a, b) => b.totalQuantity - a.totalQuantity || b.totalSpentUsd - a.totalSpentUsd)
+          .slice(0, 10)
+          .map((item) => ({
+            productId: item.productId,
+            productCode: item.productCode,
+            productName: item.productName,
+            unit: item.unit,
+            totalQuantity: item.totalQuantity,
+            totalSpentUsd: item.totalSpentUsd,
+            purchaseFrequency: item.saleIds.size,
+            avgUnitPriceUsd:
+              item.totalQuantity > 0
+                ? Math.round((item.totalSpentUsd / item.totalQuantity) * 100) / 100
+                : 0,
+            shareOfClientSpendPct:
+              clientTotalSpend > 0
+                ? Math.round((item.totalSpentUsd / clientTotalSpend) * 1000) / 10
+                : 0,
+          }));
+      };
+
+      // Group sales by clientId for both selected period and all-time
+      const periodSalesByClient = new Map<number, any[]>();
+      for (const s of periodSales) {
+        const cid = Number(s.clientId);
+        const bucket = periodSalesByClient.get(cid);
+        if (bucket) bucket.push(s);
+        else periodSalesByClient.set(cid, [s]);
+      }
+
+      const allSalesByClient = new Map<number, any[]>();
+      for (const s of validSales) {
+        const cid = Number(s.clientId);
+        const bucket = allSalesByClient.get(cid);
+        if (bucket) bucket.push(s);
+        else allSalesByClient.set(cid, [s]);
+      }
+
+      const totalPeriodAmountUsd =
+        Math.round(periodSales.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0) * 100) / 100;
+
+      let totalPeriodArticles = 0;
+
+      const clientRows = clientsList.map((cl) => {
+        const cPeriodSales = periodSalesByClient.get(cl.id) || [];
+        const cAllSales = allSalesByClient.get(cl.id) || [];
+
+        const invoiceCount = cPeriodSales.length;
+        const totalAmountUsd =
+          Math.round(cPeriodSales.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0) * 100) / 100;
+
+        let totalArticles = 0;
+        const distinctProds = new Set<string>();
+        let lastInvoiceDate: string | null = null;
+
+        for (const s of cPeriodSales) {
+          if (!lastInvoiceDate || String(s.date) > lastInvoiceDate) {
+            lastInvoiceDate = String(s.date);
+          }
+          const sItems = itemsBySaleId.get(Number(s.id)) || [];
+          for (const it of sItems) {
+            totalArticles += Number(it.quantity) || 0;
+            distinctProds.add(String(it.productId || it.productCode || it.productName));
+          }
+        }
+        totalArticles = Math.round(totalArticles * 100) / 100;
+        totalPeriodArticles = Math.round((totalPeriodArticles + totalArticles) * 100) / 100;
+
+        const allTimeInvoiceCount = cAllSales.length;
+        const allTimeTotalUsd =
+          Math.round(cAllSales.reduce((acc, s) => acc + (Number(s.totalUsd) || 0), 0) * 100) / 100;
+        let allTimeArticles = 0;
+        for (const s of cAllSales) {
+          const sItems = itemsBySaleId.get(Number(s.id)) || [];
+          for (const it of sItems) {
+            allTimeArticles += Number(it.quantity) || 0;
+          }
+        }
+        allTimeArticles = Math.round(allTimeArticles * 100) / 100;
+
+        return {
+          clientId: cl.id,
+          clientName: cl.name,
+          clientIdDoc: cl.idDoc || '',
+          zoneName: cl.zoneName || null,
+          state: cl.state || null,
+          useCostPrice: Boolean(cl.useCostPrice),
+          creditRating: (cl.creditRating || 'nuevo') as CreditRating,
+          currentBalanceUsd: Number(cl.currentBalanceUsd) || 0,
+          invoiceCount,
+          totalAmountUsd,
+          totalArticles,
+          distinctProductsCount: distinctProds.size,
+          avgTicketUsd:
+            invoiceCount > 0 ? Math.round((totalAmountUsd / invoiceCount) * 100) / 100 : 0,
+          avgArticlesPerInvoice:
+            invoiceCount > 0 ? Math.round((totalArticles / invoiceCount) * 10) / 10 : 0,
+          shareOfRevenuePct:
+            totalPeriodAmountUsd > 0
+              ? Math.round((totalAmountUsd / totalPeriodAmountUsd) * 1000) / 10
+              : 0,
+          lastInvoiceDate,
+          topProductsPeriod: buildTopProducts(cPeriodSales, totalAmountUsd),
+          topProductsAllTime: buildTopProducts(cAllSales, allTimeTotalUsd),
+          allTimeInvoiceCount,
+          allTimeTotalUsd,
+          allTimeArticles,
+        };
+      });
+
+      // Default sort: most invoices in the month -> highest amount -> most articles
+      clientRows.sort(
+        (a, b) =>
+          b.invoiceCount - a.invoiceCount ||
+          b.totalAmountUsd - a.totalAmountUsd ||
+          b.totalArticles - a.totalArticles ||
+          a.clientName.localeCompare(b.clientName)
+      );
+
+      const activeClients = clientRows.filter((c) => c.invoiceCount > 0);
+      const topByInvoices = activeClients[0] || null;
+      const topByAmount =
+        [...activeClients].sort(
+          (a, b) => b.totalAmountUsd - a.totalAmountUsd || b.invoiceCount - a.invoiceCount
+        )[0] || null;
+      const topByArticles =
+        [...activeClients].sort(
+          (a, b) => b.totalArticles - a.totalArticles || b.totalAmountUsd - a.totalAmountUsd
+        )[0] || null;
+
+      return jsonResp({
+        selectedMonth: requestedMonth,
+        availableMonths,
+        currentExchangeRate: currentRate,
+        summary: {
+          activeClientsCount: activeClients.length,
+          totalClientsCount: clientRows.length,
+          totalInvoices: periodSales.length,
+          totalAmountUsd: totalPeriodAmountUsd,
+          totalArticles: totalPeriodArticles,
+          topByInvoices,
+          topByAmount,
+          topByArticles,
+        },
+        clients: clientRows,
       });
     }
 

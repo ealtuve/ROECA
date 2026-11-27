@@ -1,5 +1,5 @@
 import React from 'react';
-import { RefreshCw, TrendingUp, AlertTriangle, Building, KeyRound, Moon, Sun, Lock } from 'lucide-react';
+import { RefreshCw, TrendingUp, AlertTriangle, Building, KeyRound, Moon, Sun, Lock, Maximize2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { useTheme } from '../context/ThemeContext.tsx';
 import { ExchangeRate } from '../types/index.ts';
@@ -13,6 +13,8 @@ interface HeaderProps {
   onOpenAuthModal: () => void;
   lowStockCount: number;
   onNavigateToLowStock: () => void;
+  isBillingTab?: boolean;
+  onEnterPosFullscreen?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -22,6 +24,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenAuthModal,
   lowStockCount,
   onNavigateToLowStock,
+  isBillingTab = false,
+  onEnterPosFullscreen,
 }) => {
   const { user, activeBranch, branches, setActiveBranch, hasPermission, lockOperatorSession } = useAuth();
   const { isDark, toggleTheme } = useTheme();
@@ -70,8 +74,19 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Right zone: Sync Status, Share/PWA, Exchange rate, Alerts, Theme, Operator */}
+      {/* Right zone: Fullscreen POS, Sync Status, Share/PWA, Exchange rate, Alerts, Theme, Operator */}
       <div className="flex items-center gap-2">
+        {isBillingTab && onEnterPosFullscreen && (
+          <button
+            type="button"
+            onClick={onEnterPosFullscreen}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            title="Expandir pantalla de facturación a pantalla completa"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Pantalla Completa</span>
+          </button>
+        )}
         <OfflineIndicator variant="badge" />
         <PWAInstallButton compact />
 

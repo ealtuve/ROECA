@@ -121,6 +121,7 @@
         "creditEnabled": { "type": "boolean", "description": "Indica si el cliente tiene permiso para compras a crédito" },
         "creditDays": { "type": "number", "description": "Plazo en días para pagar facturas a crédito" },
         "isSuspended": { "type": "boolean", "description": "Indica si el cliente está suspendido" },
+        "useCostPrice": { "type": "boolean", "description": "Indica si a este cliente se le facturan los productos a precio de costo" },
         "creditRating": { "type": "string", "enum": ["nuevo", "excelente", "regular", "malo"], "description": "Categoría crediticia según puntualidad de pago" },
         "onTimePaymentsCount": { "type": "number", "description": "Pagos a tiempo acumulados" },
         "latePaymentsCount": { "type": "number", "description": "Pagos con leve retraso (regular)" },

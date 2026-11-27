@@ -15,10 +15,13 @@ async function startServer() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   const distPath = path.join(__dirname, 'dist');
   const hasDistBuild = fs.existsSync(path.join(distPath, 'index.html'));
+  const isDevScript = process.env.npm_lifecycle_event === 'dev';
   const isProd =
-    process.env.NODE_ENV === 'production' ||
-    Boolean(process.env.K_SERVICE) ||
-    (process.env.npm_lifecycle_event === 'start' && hasDistBuild);
+    !isDevScript &&
+    hasDistBuild &&
+    (process.env.NODE_ENV === 'production' ||
+      Boolean(process.env.K_SERVICE) ||
+      process.env.npm_lifecycle_event === 'start');
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
@@ -43,6 +46,23 @@ async function startServer() {
   });
 
   if (!isProd) {
+    // In dev mode, flush any previously registered SW so preview always loads fresh UI edits
+    app.get('/sw.js', (_req, res) => {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(
+        `self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+      .then(() => self.registration.unregister())
+      .then(() => self.clients.matchAll({ type: 'window' }))
+      .then((clients) => clients.forEach((c) => c.navigate(c.url)))
+  );
+});`
+      );
+    });
+
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },

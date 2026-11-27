@@ -14,9 +14,13 @@ import {
   Filter,
   DollarSign,
   TrendingUp,
+  FileSpreadsheet,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { Product, Category, ExchangeRate } from '../types/index.ts';
 import { useAuth } from '../context/AuthContext.tsx';
+import { InventoryImportModal } from './InventoryImportModal.tsx';
 
 interface InventoryProps {
   exchangeRate: ExchangeRate | null;
@@ -27,17 +31,19 @@ export const Inventory: React.FC<InventoryProps> = ({
   exchangeRate,
   initialLowStockFilter = false,
 }) => {
-  const { hasPermission } = useAuth();
+  const { hasPermission, activeBranch } = useAuth();
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('todas');
   const [showLowStockOnly, setShowLowStockOnly] = useState(initialLowStockFilter);
   const [isLoading, setIsLoading] = useState(false);
+  const [isCleaning, setIsCleaning] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
 
   // Modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
   const [formError, setFormError] = useState('');
@@ -136,49 +142,6 @@ export const Inventory: React.FC<InventoryProps> = ({
     ) || null;
   }, [name, products, editingProduct]);
 
-  // Similar products search in real-time as user types
-  const similarProducts = useMemo(() => {
-    const query = normalizeText(name);
-    const codeQuery = normalizeText(code);
-    if (query.length < 2 && codeQuery.length < 2) return [];
-
-    const tokens = query.split(/\s+/).filter((t) => t.length > 1);
-
-    const scored = products
-      .filter((p) => p.id !== editingProduct?.id)
-      .map((p) => {
-        const pName = normalizeText(p.name);
-        const pCode = normalizeText(p.code);
-        let score = 0;
-
-        // Code matching
-        if (codeQuery.length >= 2) {
-          if (pCode === codeQuery) score += 40;
-          else if (pCode.startsWith(codeQuery)) score += 25;
-          else if (pCode.includes(codeQuery)) score += 15;
-        }
-
-        // Name matching
-        if (query.length >= 2) {
-          if (pName === query) score += 60;
-          else if (pName.startsWith(query)) score += 35;
-          else if (pName.includes(query)) score += 20;
-
-          tokens.forEach((tok) => {
-            if (pName.includes(tok)) score += 10;
-          });
-        }
-
-        return { product: p, score };
-      })
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 5)
-      .map((item) => item.product);
-
-    return scored;
-  }, [name, code, products, editingProduct]);
-
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!code.trim() || !name.trim() || !priceUsd) {
@@ -201,14 +164,18 @@ export const Inventory: React.FC<InventoryProps> = ({
     }
 
     try {
+      const cleanCode = code
+        .trim()
+        .replace(/^['´`’‘ʼ′ʹ"“”\u00B4\u02B9\u02BC\u2018\u2019\u2032]+/, '')
+        .trim();
       const payload = {
-        code: code.trim(),
+        code: cleanCode,
         name: name.trim(),
         description: description.trim() || null,
         categoryId: categoryId ? Number(categoryId) : null,
         unit,
-        costUsd: Number(costUsd) || 0,
-        priceUsd: Number(priceUsd),
+        costUsd: Math.round((Number(costUsd) || 0) * 100) / 100,
+        priceUsd: Math.round((Number(priceUsd) || 0) * 100) / 100,
         stock: Number(stock) || 0,
         minStock: Number(minStock) || 10,
       };
@@ -267,6 +234,53 @@ export const Inventory: React.FC<InventoryProps> = ({
   const lowStockCount = products.filter((p) => p.stock <= p.minStock).length;
   const canEdit = hasPermission('inventory');
 
+  // Detect existing products with leading apostrophes in code or repeated descriptions
+  const cleanupStats = useMemo(() => {
+    let dirtyCodes = 0;
+    let duplicateNames = 0;
+    const seenNames = new Set<string>();
+
+    for (const p of products) {
+      if (/^['´`’‘ʼ′ʹ"“”\u00B4\u02B9\u02BC\u2018\u2019\u2032]/.test(String(p.code || '').trim())) {
+        dirtyCodes++;
+      }
+      const normName = normalizeText(p.name).replace(/\s+/g, ' ');
+      if (normName) {
+        if (seenNames.has(normName)) {
+          duplicateNames++;
+        } else {
+          seenNames.add(normName);
+        }
+      }
+    }
+    return { dirtyCodes, duplicateNames, hasIssues: dirtyCodes > 0 || duplicateNames > 0 };
+  }, [products]);
+
+  const handleCleanupInventory = async () => {
+    setIsCleaning(true);
+    try {
+      const res = await apiFetch('/api/products/cleanup', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'No se pudo limpiar el inventario.');
+      }
+      const parts: string[] = [];
+      if (data.cleanedCodes > 0) parts.push(`${data.cleanedCodes} códigos limpiados (sin ´ / ')`);
+      if (data.removedDuplicates > 0) parts.push(`${data.removedDuplicates} descripciones repetidas eliminadas`);
+      setSuccessMsg(
+        parts.length > 0
+          ? `¡Limpieza completada! ${parts.join(' · ')}.`
+          : 'El inventario ya estaba limpio y sin duplicados.'
+      );
+      setTimeout(() => setSuccessMsg(''), 7000);
+      await loadInventory();
+    } catch (err: any) {
+      console.error('Cleanup error:', err);
+    } finally {
+      setIsCleaning(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Banner & Control Bar */}
@@ -299,13 +313,24 @@ export const Inventory: React.FC<InventoryProps> = ({
           </button>
 
           {canEdit && (
-            <button
-              onClick={openCreateModal}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 shadow-xs cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Registrar Producto</span>
-            </button>
+            <>
+              <button
+                onClick={() => setIsImportModalOpen(true)}
+                className="px-3.5 py-2 bg-sky-600 hover:bg-sky-700 dark:bg-sky-600 dark:hover:bg-sky-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 shadow-xs cursor-pointer"
+                title="Subir archivo Excel o CSV con código, descripción, precio costo y precio venta"
+              >
+                <FileSpreadsheet className="w-4 h-4" />
+                <span>Importar Excel / CSV</span>
+              </button>
+
+              <button
+                onClick={openCreateModal}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 dark:bg-emerald-600 dark:hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-2 shadow-xs cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Registrar Producto</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -314,6 +339,46 @@ export const Inventory: React.FC<InventoryProps> = ({
         <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs text-emerald-800 dark:text-emerald-300 font-semibold flex items-center gap-2 shadow-xs">
           <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           <span>{successMsg}</span>
+        </div>
+      )}
+
+      {canEdit && cleanupStats.hasIssues && (
+        <div className="p-3.5 bg-amber-50 dark:bg-amber-950/35 border border-amber-300 dark:border-amber-800/80 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-start sm:items-center gap-2.5 text-amber-900 dark:text-amber-200">
+            <Sparkles className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+            <span>
+              <strong>Limpieza recomendada:</strong>{' '}
+              {cleanupStats.dirtyCodes > 0 && (
+                <>
+                  hay <strong>{cleanupStats.dirtyCodes}</strong> códigos con símbolo (´ / ') al principio
+                  {cleanupStats.duplicateNames > 0 ? ' y ' : '.'}
+                </>
+              )}
+              {cleanupStats.duplicateNames > 0 && (
+                <>
+                  hay <strong>{cleanupStats.duplicateNames}</strong> productos con descripción repetida.
+                </>
+              )}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleCleanupInventory}
+            disabled={isCleaning}
+            className="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white rounded-lg font-bold flex items-center justify-center gap-2 shrink-0 cursor-pointer transition-colors"
+          >
+            {isCleaning ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Limpiando...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Limpiar Códigos y Dejar Uno Solo</span>
+              </>
+            )}
+          </button>
         </div>
       )}
 
@@ -366,10 +431,10 @@ export const Inventory: React.FC<InventoryProps> = ({
                 {canEdit && <th className="py-3 px-4 text-center">Acciones</th>}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-slate-100 dark:divide-[#262f3c]">
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-8 text-center text-slate-400">
+                  <td colSpan={11} className="py-8 text-center text-slate-400 dark:text-slate-400">
                     No se encontraron productos que coincidan con la búsqueda.
                   </td>
                 </tr>
@@ -381,65 +446,60 @@ export const Inventory: React.FC<InventoryProps> = ({
                   return (
                     <tr
                       key={product.id}
-                      className={`hover:bg-slate-50/80 transition-colors ${
+                      className={`hover:bg-slate-50/80 dark:hover:bg-[#1f2530]/80 transition-colors ${
                         isOutOfStock
-                          ? 'bg-rose-50/40'
+                          ? 'bg-rose-50/40 dark:bg-rose-950/30'
                           : isLowStock
-                          ? 'bg-amber-50/40'
+                          ? 'bg-amber-50/40 dark:bg-amber-950/25'
                           : ''
                       }`}
                     >
-                      <td className="py-3 px-4 font-mono font-semibold text-slate-900">
+                      <td className="py-3 px-4 font-mono font-semibold text-slate-900 dark:text-slate-200">
                         {product.code}
                       </td>
-                      <td className="py-3 px-4 font-medium text-slate-800">
-                        <span className="font-semibold">{product.name}</span>
-                        {product.description && (
-                          <span className="block text-[11px] text-slate-400 truncate max-w-xs">
-                            {product.description}
-                          </span>
-                        )}
+                      <td className="py-3 px-4 font-semibold text-slate-900 dark:text-white">
+                        {product.name}
                       </td>
-                      <td className="py-3 px-4 text-slate-600">
+                      <td className="py-3 px-4 text-slate-600 dark:text-slate-300">
                         {product.categoryName || 'Sin categoría'}
                       </td>
-                      <td className="py-3 px-4 text-slate-600">{product.unit}</td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-900 text-sm">
+                      <td className="py-3 px-4 text-slate-600 dark:text-slate-300">{product.unit}</td>
+                      <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-900 dark:text-white text-sm">
                         Bs. {(product.priceUsd * rate).toFixed(2)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-500">
+                      <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-500 dark:text-slate-300">
                         ${product.priceUsd.toFixed(2)}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-400">
+                      <td className="py-3 px-4 text-right font-mono tabular-nums text-slate-400 dark:text-slate-400">
                         ${product.costUsd.toFixed(2)}
                       </td>
                       <td className="py-3 px-4 text-center font-mono tabular-nums font-bold">
                         <span
                           className={`${
                             isOutOfStock
-                              ? 'text-rose-700'
+                              ? 'text-rose-700 dark:text-rose-400'
                               : isLowStock
-                              ? 'text-amber-700'
-                              : 'text-slate-900'
+                              ? 'text-amber-700 dark:text-amber-400'
+                              : 'text-slate-900 dark:text-white'
                           }`}
                         >
                           {product.stock}
                         </span>
                       </td>
-                      <td className="py-3 px-4 text-center font-mono tabular-nums text-slate-400">
+                      <td className="py-3 px-4 text-center font-mono tabular-nums text-slate-400 dark:text-slate-400">
                         {product.minStock}
                       </td>
                       <td className="py-3 px-4 text-center">
                         {isOutOfStock ? (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 dark:bg-rose-950/70 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800/70">
                             AGOTADO
                           </span>
                         ) : isLowStock ? (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/70">
                             STOCK BAJO
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/70">
                             NORMAL
                           </span>
                         )}
@@ -449,14 +509,14 @@ export const Inventory: React.FC<InventoryProps> = ({
                           <div className="flex items-center justify-center gap-1.5">
                             <button
                               onClick={() => openEditModal(product)}
-                              className="p-1 text-slate-500 hover:text-emerald-700 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                              className="p-1 text-slate-500 dark:text-slate-300 hover:text-emerald-700 dark:hover:text-emerald-400 hover:bg-slate-100 dark:hover:bg-[#262f3c] rounded transition-colors cursor-pointer"
                               title="Modificar producto"
                             >
                               <Edit className="w-3.5 h-3.5" />
                             </button>
                             <button
                               onClick={() => setDeleteTarget(product)}
-                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded transition-colors cursor-pointer"
+                              className="p-1 text-slate-400 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-slate-100 dark:hover:bg-[#262f3c] rounded transition-colors cursor-pointer"
                               title="Eliminar producto"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -490,7 +550,7 @@ export const Inventory: React.FC<InventoryProps> = ({
                 <span>{editingProduct ? 'Modificar Producto de Víveres' : 'Registrar Nuevo Producto'}</span>
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Distribuidora ROECA · Verificación en tiempo real de códigos y productos semejantes
+                Distribuidora ROECA · Gestión de código, costos, precios y existencias
               </p>
             </div>
 
@@ -627,55 +687,6 @@ export const Inventory: React.FC<InventoryProps> = ({
                 </div>
               )}
 
-              {/* LIVE SIMILAR PRODUCTS PANEL (PRODUCTOS SEMEJANTES) */}
-              {similarProducts.length > 0 && (
-                <div className="p-3 bg-slate-50 dark:bg-[#1c222b] border border-slate-200 dark:border-[#2d3748] rounded-xl space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                      <Search className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                      <span>Productos semejantes en inventario ({similarProducts.length} encontrados):</span>
-                    </span>
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500">Revise para no duplicar</span>
-                  </div>
-
-                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                    {similarProducts.map((simProd) => (
-                      <div
-                        key={simProd.id}
-                        className="p-2 bg-white dark:bg-[#161b22] border border-slate-200 dark:border-[#262f3c] rounded-lg flex items-center justify-between text-[11px] hover:border-emerald-500 dark:hover:border-emerald-500 transition-colors"
-                      >
-                        <div className="min-w-0 pr-2">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="font-bold text-slate-900 dark:text-slate-100 truncate">
-                              {simProd.name}
-                            </span>
-                            <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-[#252c38] px-1 py-0.2 rounded">
-                              SKU: {simProd.code}
-                            </span>
-                          </div>
-                          <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center gap-2 mt-0.5 font-mono">
-                            <span>Stock: {simProd.stock} {simProd.unit}</span>
-                            <span>·</span>
-                            <span className="font-bold text-emerald-700 dark:text-emerald-400">
-                              Bs. {(simProd.priceUsd * rate).toFixed(2)} (${simProd.priceUsd.toFixed(2)})
-                            </span>
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(simProd)}
-                          className="px-2 py-1 bg-slate-100 hover:bg-emerald-50 dark:bg-[#252c38] dark:hover:bg-emerald-950/60 text-slate-700 dark:text-slate-200 hover:text-emerald-700 dark:hover:text-emerald-400 border border-slate-200 dark:border-[#2d3748] rounded text-[10px] font-semibold shrink-0 cursor-pointer transition-colors"
-                          title="Cargar los datos de este producto en el formulario para editarlo"
-                        >
-                          Cargar / Editar
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Categoría y Stock Mínimo */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -731,6 +742,11 @@ export const Inventory: React.FC<InventoryProps> = ({
                     placeholder="0.00"
                     value={priceUsd}
                     onChange={(e) => setPriceUsd(e.target.value)}
+                    onBlur={() => {
+                      if (priceUsd !== '' && !isNaN(Number(priceUsd))) {
+                        setPriceUsd((Math.round(Math.max(0, Number(priceUsd)) * 100) / 100).toFixed(2));
+                      }
+                    }}
                     className="w-full py-2 px-3 border border-slate-200 dark:border-[#2d3748] bg-white dark:bg-[#1c222b] text-slate-900 dark:text-slate-100 rounded-lg focus:outline-hidden font-mono font-bold text-emerald-800 dark:text-emerald-400"
                     required
                   />
@@ -816,6 +832,19 @@ export const Inventory: React.FC<InventoryProps> = ({
           </div>
         </div>
       )}
+      <InventoryImportModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        existingProducts={products}
+        categories={categories}
+        exchangeRate={rate}
+        branchId={activeBranch?.id || 1}
+        onImportSuccess={(summary) => {
+          setSuccessMsg(summary);
+          setTimeout(() => setSuccessMsg(''), 7000);
+          loadInventory();
+        }}
+      />
     </div>
   );
 };

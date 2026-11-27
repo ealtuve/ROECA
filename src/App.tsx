@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.tsx';
-import { ThemeProvider } from './context/ThemeContext.tsx';
+import { ThemeProvider, useTheme } from './context/ThemeContext.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { Header } from './components/Header.tsx';
@@ -17,6 +17,7 @@ import { MerchandiseEntry } from './components/MerchandiseEntry.tsx';
 import { AccountsReceivable } from './components/AccountsReceivable.tsx';
 import { AccountsPayable } from './components/AccountsPayable.tsx';
 import { Clients } from './components/Clients.tsx';
+import { ClientAnalytics } from './components/ClientAnalytics.tsx';
 import { Suppliers } from './components/Suppliers.tsx';
 import { FinancialReports } from './components/FinancialReports.tsx';
 import { ExchangeRateModule } from './components/ExchangeRateModule.tsx';
@@ -25,9 +26,29 @@ import { ExchangeRateModal } from './components/ExchangeRateModal.tsx';
 import { BranchesModal } from './components/BranchesModal.tsx';
 import { OperatorLoginModal } from './components/OperatorLoginModal.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
-import { ExchangeRate, DashboardStats, ModuleKey } from './types/index.ts';
+import { ExchangeRate, DashboardStats, ModuleKey, UserProfile } from './types/index.ts';
 import { apiFetch } from './lib/firestoreStore.ts';
-import { ShieldAlert, Loader2 } from 'lucide-react';
+import {
+  ShieldAlert,
+  Loader2,
+  PanelLeftOpen,
+  TrendingUp,
+  Sun,
+  Moon,
+  KeyRound,
+  Lock,
+} from 'lucide-react';
+
+const isCashierFullscreenUser = (u: UserProfile | null): boolean => {
+  if (!u) return false;
+  const uname = (u.username || '').trim().toLowerCase();
+  const displayName = (u.name || '').trim().toLowerCase();
+  const emailPrefix = (u.email || '').split('@')[0].trim().toLowerCase();
+  const cajaRegex = /^caja[\s_-]*[1-6]$/;
+  const isNamedCaja1To6 =
+    cajaRegex.test(uname) || cajaRegex.test(displayName) || cajaRegex.test(emailPrefix);
+  return isNamedCaja1To6 || u.role === 'cajero';
+};
 
 const NAV_ORDER: ModuleKey[] = [
   'dashboard',
@@ -37,15 +58,19 @@ const NAV_ORDER: ModuleKey[] = [
   'cxc',
   'cxp',
   'clients',
+  'client_analytics',
   'suppliers',
   'reports',
 ];
 
 function MainLayout() {
-  const { user, firebaseUser, authReady, isSeeding, hasPermission } = useAuth();
+  const { user, firebaseUser, authReady, isSeeding, hasPermission, activeBranch, lockOperatorSession } = useAuth();
+  const { isDark, toggleTheme } = useTheme();
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [isPosFullscreen, setIsPosFullscreen] = useState<boolean>(false);
   const [exchangeRate, setExchangeRate] = useState<ExchangeRate | null>(null);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
+  const lastOperatorIdRef = useRef<number | null>(null);
 
   // Modals
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
@@ -75,9 +100,25 @@ function MainLayout() {
     }
   }, [authReady, firebaseUser, user, isSeeding, fetchGlobalData]);
 
-  // If operator changes and current tab is no longer permitted, switch to first allowed module
+  // Automatically open full-screen Facturación (POS) when caja1..caja6 or any cajero signs in
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      lastOperatorIdRef.current = null;
+      setIsPosFullscreen(false);
+      return;
+    }
+
+    if (lastOperatorIdRef.current !== user.id) {
+      lastOperatorIdRef.current = user.id;
+      if (isCashierFullscreenUser(user) && hasPermission('billing')) {
+        setCurrentTab('billing');
+        setIsPosFullscreen(true);
+        return;
+      } else {
+        setIsPosFullscreen(false);
+      }
+    }
+
     if (!hasPermission(currentTab as ModuleKey)) {
       const firstAllowed = NAV_ORDER.find((m) => hasPermission(m));
       if (firstAllowed) {
@@ -115,47 +156,135 @@ function MainLayout() {
     return hasPermission(tab as ModuleKey);
   };
 
+  const isFullScreenBillingActive =
+    isPosFullscreen && currentTab === 'billing' && isTabAllowed('billing');
+
+  const hasOtherModulesBesidesBilling = NAV_ORDER.some(
+    (m) => m !== 'billing' && hasPermission(m)
+  );
+
   return (
-    <div className="flex h-screen bg-slate-100 dark:bg-[#0d1117] overflow-hidden text-slate-900 dark:text-slate-100 antialiased selection:bg-emerald-500 selection:text-white transition-colors">
-      {/* Left Navigation Menu */}
-      <Sidebar
-        currentTab={currentTab}
-        setCurrentTab={(tab) => {
-          if (tab === 'branches') {
-            setIsBranchesModalOpen(true);
-          } else {
-            setCurrentTab(tab);
-            if (tab !== 'inventory') setInitialLowStockFilter(false);
-          }
-        }}
-        onOpenAuth={() => setIsAuthModalOpen(true)}
-      />
+    <div className="flex h-screen w-screen bg-slate-100 dark:bg-[#0d1117] overflow-hidden text-slate-900 dark:text-slate-100 antialiased selection:bg-emerald-500 selection:text-white transition-colors">
+      {/* Left Navigation Menu (hidden in full-screen POS mode for maximum billing visibility) */}
+      {!isFullScreenBillingActive && (
+        <Sidebar
+          currentTab={currentTab}
+          setCurrentTab={(tab) => {
+            if (tab === 'branches') {
+              setIsBranchesModalOpen(true);
+            } else {
+              setCurrentTab(tab);
+              if (tab !== 'inventory') setInitialLowStockFilter(false);
+              if (tab === 'billing' && isCashierFullscreenUser(user)) {
+                setIsPosFullscreen(true);
+              }
+            }
+          }}
+          onOpenAuth={() => setIsAuthModalOpen(true)}
+        />
+      )}
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
-        {/* Top Header */}
-        <Header
-          exchangeRate={exchangeRate}
-          onOpenExchangeModal={() => {
-            if (currentTab !== 'billing' && hasPermission('dashboard')) {
-              setCurrentTab('dashboard');
-              setDashboardAdminRequest({ tab: 'tasa', seq: Date.now() });
-            } else {
-              setIsExchangeModalOpen(true);
-            }
-          }}
-          onOpenBranchesModal={() => {
-            if (hasPermission('dashboard')) {
-              setCurrentTab('dashboard');
-              setDashboardAdminRequest({ tab: 'sucursales', seq: Date.now() });
-            } else {
-              setIsBranchesModalOpen(true);
-            }
-          }}
-          onOpenAuthModal={() => setIsAuthModalOpen(true)}
-          lowStockCount={dashboardStats?.lowStockCount || 0}
-          onNavigateToLowStock={handleNavigateToLowStock}
-        />
+        {/* Top Header — ultra-compact strip in full-screen POS mode so billing fills the whole viewport */}
+        {isFullScreenBillingActive ? (
+          <header className="h-11 bg-white dark:bg-[#161b22] border-b border-slate-200 dark:border-[#262f3c] px-3 sm:px-4 flex items-center justify-between gap-2 shrink-0 transition-colors">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-7 h-7 rounded-md bg-emerald-600 flex items-center justify-center font-bold text-white text-xs tracking-wider shrink-0">
+                DR
+              </div>
+              <div className="flex items-center gap-2 min-w-0 text-xs">
+                <span className="font-bold text-slate-900 dark:text-white whitespace-nowrap shrink-0">
+                  Facturación POS
+                </span>
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-600 hidden sm:inline">·</span>
+                <span className="text-slate-500 dark:text-slate-400 truncate hidden sm:inline">
+                  {activeBranch?.name || 'Sede Principal'}
+                </span>
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">·</span>
+                <span className="font-mono font-semibold text-emerald-700 dark:text-emerald-400 whitespace-nowrap shrink-0">
+                  @{user.username || user.name}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 text-xs font-mono tabular-nums text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-md bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 whitespace-nowrap shrink-0">
+                <TrendingUp className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span className="font-bold">
+                  {exchangeRate ? `${exchangeRate.rate.toFixed(2)} Bs/$` : 'BCV'}
+                </span>
+              </div>
+
+              <OfflineIndicator variant="badge" />
+
+              {hasOtherModulesBesidesBilling && (
+                <button
+                  type="button"
+                  onClick={() => setIsPosFullscreen(false)}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-[#1c222b] dark:hover:bg-[#252c38] border border-slate-200 dark:border-[#2d3748] text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                  title="Mostrar menú lateral de módulos"
+                >
+                  <PanelLeftOpen className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">Menú</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={toggleTheme}
+                className="p-1.5 rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-[#1c222b] dark:hover:bg-[#252c38] border border-slate-200 dark:border-[#2d3748] text-slate-700 dark:text-slate-300 transition-colors cursor-pointer shrink-0"
+                title={isDark ? 'Cambiar a Modo Claro' : 'Cambiar a Modo Oscuro'}
+              >
+                {isDark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-slate-500" />}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsAuthModalOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-[#1c222b] dark:hover:bg-[#252c38] border border-slate-200 dark:border-[#2d3748] text-xs font-semibold text-slate-800 dark:text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                title="Cambiar de operador con usuario y clave"
+              >
+                <KeyRound className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400" />
+                <span className="hidden lg:inline">Cambiar Usuario</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void lockOperatorSession()}
+                className="p-1.5 rounded-md bg-slate-100 hover:bg-amber-100 dark:bg-[#1c222b] dark:hover:bg-amber-950/50 border border-slate-200 dark:border-[#2d3748] text-slate-600 dark:text-slate-300 hover:text-amber-700 dark:hover:text-amber-300 transition-colors cursor-pointer shrink-0"
+                title="Bloquear caja y cerrar turno"
+              >
+                <Lock className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </header>
+        ) : (
+          <Header
+            exchangeRate={exchangeRate}
+            onOpenExchangeModal={() => {
+              if (currentTab !== 'billing' && hasPermission('dashboard')) {
+                setCurrentTab('dashboard');
+                setDashboardAdminRequest({ tab: 'tasa', seq: Date.now() });
+              } else {
+                setIsExchangeModalOpen(true);
+              }
+            }}
+            onOpenBranchesModal={() => {
+              if (hasPermission('dashboard')) {
+                setCurrentTab('dashboard');
+                setDashboardAdminRequest({ tab: 'sucursales', seq: Date.now() });
+              } else {
+                setIsBranchesModalOpen(true);
+              }
+            }}
+            onOpenAuthModal={() => setIsAuthModalOpen(true)}
+            lowStockCount={dashboardStats?.lowStockCount || 0}
+            onNavigateToLowStock={handleNavigateToLowStock}
+            isBillingTab={currentTab === 'billing'}
+            onEnterPosFullscreen={() => setIsPosFullscreen(true)}
+          />
+        )}
 
         {/* Offline / Reconnect Sync Banner */}
         <OfflineIndicator variant="banner" />
@@ -164,7 +293,9 @@ function MainLayout() {
         <main
           className={`flex-1 ${
             currentTab === 'billing'
-              ? 'overflow-y-auto lg:overflow-hidden p-2.5 sm:p-3 flex flex-col min-h-0'
+              ? isFullScreenBillingActive
+                ? 'overflow-y-auto lg:overflow-hidden p-2 flex flex-col min-h-0 w-full'
+                : 'overflow-y-auto lg:overflow-hidden p-2.5 sm:p-3 flex flex-col min-h-0'
               : 'overflow-y-auto p-6'
           }`}
         >
@@ -192,6 +323,7 @@ function MainLayout() {
                     setCurrentTab(tab);
                     if (tab === 'inventory') setInitialLowStockFilter(false);
                   }}
+                  onNavigateToLowStock={handleNavigateToLowStock}
                   onRefresh={fetchGlobalData}
                   requestedAdminTab={dashboardAdminRequest}
                 />
@@ -239,6 +371,10 @@ function MainLayout() {
                   onNavigateToCxC={() => setCurrentTab('cxc')}
                   onPaymentRegistered={fetchGlobalData}
                 />
+              )}
+
+              {currentTab === 'client_analytics' && (
+                <ClientAnalytics exchangeRate={exchangeRate} />
               )}
 
               {currentTab === 'suppliers' && (

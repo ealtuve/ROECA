@@ -8,6 +8,7 @@ export type ModuleKey =
   | 'cxc'
   | 'cxp'
   | 'clients'
+  | 'client_analytics'
   | 'suppliers'
   | 'reports'
   | 'exchange'
@@ -31,6 +32,7 @@ export const ALL_MODULES: ModuleDefinition[] = [
   { key: 'cxc', label: 'Cuentas por Cobrar', description: 'Créditos de clientes y abonos parciales', group: 'finanzas' },
   { key: 'cxp', label: 'Cuentas por Pagar', description: 'Facturas de proveedores y pagos', group: 'finanzas' },
   { key: 'clients', label: 'Clientes', description: 'Registro, zonas, límite y suspensión de crédito', group: 'operativo' },
+  { key: 'client_analytics', label: 'Análisis de Clientes', description: 'Top 10 productos por cliente y ranking mensual de facturas', group: 'finanzas' },
   { key: 'suppliers', label: 'Proveedores', description: 'Directorio y saldos de proveedores', group: 'operativo' },
   { key: 'reports', label: 'Reportes Financieros', description: 'Reportes por fechas, estado y zona', group: 'finanzas' },
   { key: 'exchange', label: 'Tasa del Día (BCV)', description: 'Consulta y ajuste de tasa USD/VES', group: 'administracion' },
@@ -51,6 +53,7 @@ export const ROLE_DEFAULT_MODULES: Record<UserRole, ModuleKey[]> = {
     'cxc',
     'cxp',
     'clients',
+    'client_analytics',
     'suppliers',
     'reports',
     'exchange',
@@ -59,7 +62,7 @@ export const ROLE_DEFAULT_MODULES: Record<UserRole, ModuleKey[]> = {
   ],
   cajero: ['dashboard', 'billing', 'cxc', 'clients'],
   almacen: ['dashboard', 'inventory', 'receiving', 'suppliers', 'cxp'],
-  contador: ['dashboard', 'cxc', 'cxp', 'clients', 'suppliers', 'reports', 'exchange', 'backup'],
+  contador: ['dashboard', 'cxc', 'cxp', 'clients', 'client_analytics', 'suppliers', 'reports', 'exchange', 'backup'],
 };
 
 export interface UserProfile {
@@ -152,6 +155,7 @@ export interface Client {
   creditEnabled: boolean;
   creditDays: number;
   isSuspended: boolean;
+  useCostPrice?: boolean;
   creditRating: CreditRating;
   onTimePaymentsCount?: number;
   latePaymentsCount?: number;
@@ -276,15 +280,94 @@ export interface Payment {
   createdAt: string;
 }
 
+export interface DashboardTopProduct {
+  productId: number;
+  productCode: string;
+  productName: string;
+  unit: string;
+  unitsSold: number;
+  revenueUsd: number;
+  profitUsd: number;
+  currentStock: number;
+}
+
+export interface DashboardLowStockItem {
+  id: number;
+  code: string;
+  name: string;
+  unit: string;
+  stock: number;
+  minStock: number;
+  costUsd: number;
+  priceUsd: number;
+  deficit: number;
+}
+
+export interface DashboardDueReceivable {
+  id: number;
+  invoiceNumber: string;
+  clientId: number;
+  clientName: string;
+  date: string;
+  dueDate: string;
+  daysUntilDue: number;
+  totalUsd: number;
+  balanceDueUsd: number;
+  status: string;
+}
+
+export interface DashboardDuePayable {
+  id: number;
+  invoiceNumber: string;
+  supplierId: number;
+  supplierName: string;
+  date: string;
+  dueDate: string;
+  daysUntilDue: number;
+  totalUsd: number;
+  balanceDueUsd: number;
+  status: string;
+  isEstimatedDueDate: boolean;
+}
+
+export interface DashboardDailyPoint {
+  date: string;
+  label: string;
+  salesUsd: number;
+  profitUsd: number;
+  count: number;
+}
+
 export interface DashboardStats {
   salesTodayUsd: number;
   salesTodayCount: number;
+  netProfitTodayUsd: number;
   salesMonthUsd: number;
+  salesMonthCount: number;
+  cogsMonthUsd: number;
+  netProfitMonthUsd: number;
+  netProfitMarginPct: number;
+  topProductScope: 'mes' | 'historico';
+  topProduct: DashboardTopProduct | null;
+  topProducts: DashboardTopProduct[];
   cxcTotalUsd: number;
   cxcDebtorsCount: number;
+  cxcOverdueCount: number;
+  cxcOverdueUsd: number;
+  cxcDueSoonCount: number;
+  cxcDueSoonUsd: number;
+  upcomingReceivables: DashboardDueReceivable[];
   cxpTotalUsd: number;
   cxpCreditorsCount: number;
+  cxpOverdueCount: number;
+  cxpOverdueUsd: number;
+  cxpDueSoonCount: number;
+  cxpDueSoonUsd: number;
+  upcomingPayables: DashboardDuePayable[];
   lowStockCount: number;
+  outOfStockCount: number;
+  lowStockProducts: DashboardLowStockItem[];
+  dailyTrend: DashboardDailyPoint[];
   incomeUsd: number;
   incomeVes: number;
   expenseUsd: number;
@@ -310,4 +393,57 @@ export interface DashboardStats {
     createdAt: string;
   }>;
   currentExchangeRate: number;
+}
+
+export interface ClientTopProductItem {
+  productId: number;
+  productCode: string;
+  productName: string;
+  unit: string;
+  totalQuantity: number;
+  totalSpentUsd: number;
+  purchaseFrequency: number;
+  avgUnitPriceUsd: number;
+  shareOfClientSpendPct: number;
+}
+
+export interface ClientAnalyticsRow {
+  clientId: number;
+  clientName: string;
+  clientIdDoc: string;
+  zoneName: string | null;
+  state: string | null;
+  useCostPrice: boolean;
+  creditRating: CreditRating;
+  currentBalanceUsd: number;
+  invoiceCount: number;
+  totalAmountUsd: number;
+  totalArticles: number;
+  distinctProductsCount: number;
+  avgTicketUsd: number;
+  avgArticlesPerInvoice: number;
+  shareOfRevenuePct: number;
+  lastInvoiceDate: string | null;
+  topProductsPeriod: ClientTopProductItem[];
+  topProductsAllTime: ClientTopProductItem[];
+  allTimeInvoiceCount: number;
+  allTimeTotalUsd: number;
+  allTimeArticles: number;
+}
+
+export interface ClientAnalyticsResponse {
+  selectedMonth: string;
+  availableMonths: string[];
+  currentExchangeRate: number;
+  summary: {
+    activeClientsCount: number;
+    totalClientsCount: number;
+    totalInvoices: number;
+    totalAmountUsd: number;
+    totalArticles: number;
+    topByInvoices: ClientAnalyticsRow | null;
+    topByAmount: ClientAnalyticsRow | null;
+    topByArticles: ClientAnalyticsRow | null;
+  };
+  clients: ClientAnalyticsRow[];
 }

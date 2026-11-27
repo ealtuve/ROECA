@@ -39,6 +39,10 @@ service cloud.firestore {
       return isSignedIn() && data.id is number && data.id >= 1 && data.ownerUid is string && data.ownerUid.size() >= 1;
     }
 
+    function isBoundedWorkspaceList() {
+      return isSignedIn() && (request.query.limit == null || request.query.limit <= 5000);
+    }
+
     function isOptString(data, field, maxLen) {
       return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
     }
@@ -142,7 +146,7 @@ service cloud.firestore {
 
     function isValidClient(data) {
       return data.keys().hasAll(['id', 'idDoc', 'name', 'creditEnabled', 'creditDays', 'isSuspended', 'creditRating', 'creditLimitUsd', 'currentBalanceUsd', 'ownerUid', 'createdAt'])
-        && data.keys().hasOnly(['id', 'idDoc', 'name', 'phone', 'email', 'address', 'state', 'zoneId', 'zoneName', 'creditEnabled', 'creditDays', 'isSuspended', 'creditRating', 'onTimePaymentsCount', 'latePaymentsCount', 'veryLatePaymentsCount', 'creditLimitUsd', 'currentBalanceUsd', 'branchId', 'ownerUid', 'createdAt'])
+        && data.keys().hasOnly(['id', 'idDoc', 'name', 'phone', 'email', 'address', 'state', 'zoneId', 'zoneName', 'creditEnabled', 'creditDays', 'isSuspended', 'useCostPrice', 'creditRating', 'onTimePaymentsCount', 'latePaymentsCount', 'veryLatePaymentsCount', 'creditLimitUsd', 'currentBalanceUsd', 'branchId', 'ownerUid', 'createdAt'])
         && data.id is number && data.id >= 1
         && isReqString(data, 'idDoc', 1, 40)
         && isReqString(data, 'name', 1, 200)
@@ -155,6 +159,7 @@ service cloud.firestore {
         && data.creditEnabled is bool
         && data.creditDays is number && data.creditDays >= 0 && data.creditDays <= 365
         && data.isSuspended is bool
+        && (!('useCostPrice' in data) || data.useCostPrice is bool)
         && data.creditRating in ['nuevo', 'excelente', 'regular', 'malo']
         && isOptNumber(data, 'onTimePaymentsCount')
         && isOptNumber(data, 'latePaymentsCount')
@@ -296,7 +301,7 @@ service cloud.firestore {
     // =========================================================================
     match /branches/{branchId} {
       allow get: if isValidId(branchId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(branchId) && isValidBranch(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(branchId) && isValidBranch(incoming()) && isWorkspaceDoc(existing())
@@ -307,7 +312,7 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if isValidId(userId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(userId) && isValidUser(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(userId) && isValidUser(incoming()) && isWorkspaceDoc(existing())
@@ -318,7 +323,7 @@ service cloud.firestore {
 
     match /exchangeRates/{rateId} {
       allow get: if isValidId(rateId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(rateId) && isValidExchangeRate(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if false;
@@ -327,7 +332,7 @@ service cloud.firestore {
 
     match /categories/{categoryId} {
       allow get: if isValidId(categoryId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(categoryId) && isValidCategory(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(categoryId) && isValidCategory(incoming()) && isWorkspaceDoc(existing())
@@ -338,7 +343,7 @@ service cloud.firestore {
 
     match /zones/{zoneId} {
       allow get: if isValidId(zoneId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(zoneId) && isValidZone(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(zoneId) && isValidZone(incoming()) && isWorkspaceDoc(existing())
@@ -349,7 +354,7 @@ service cloud.firestore {
 
     match /products/{productId} {
       allow get: if isValidId(productId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(productId) && isValidProduct(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(productId) && isValidProduct(incoming()) && isWorkspaceDoc(existing())
@@ -361,13 +366,13 @@ service cloud.firestore {
 
     match /clients/{clientId} {
       allow get: if isValidId(clientId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(clientId) && isValidClient(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(clientId) && isValidClient(incoming()) && isWorkspaceDoc(existing())
         && incoming().id == existing().id && incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt
         && (
-          incoming().diff(existing()).affectedKeys().hasOnly(['idDoc', 'name', 'phone', 'email', 'address', 'state', 'zoneId', 'zoneName', 'creditEnabled', 'creditDays', 'isSuspended', 'creditRating', 'creditLimitUsd', 'branchId']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['idDoc', 'name', 'phone', 'email', 'address', 'state', 'zoneId', 'zoneName', 'creditEnabled', 'creditDays', 'isSuspended', 'useCostPrice', 'creditRating', 'creditLimitUsd', 'branchId']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['currentBalanceUsd', 'creditRating', 'onTimePaymentsCount', 'latePaymentsCount', 'veryLatePaymentsCount']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['currentBalanceUsd']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['isSuspended'])
@@ -377,7 +382,7 @@ service cloud.firestore {
 
     match /suppliers/{supplierId} {
       allow get: if isValidId(supplierId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(supplierId) && isValidSupplier(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(supplierId) && isValidSupplier(incoming()) && isWorkspaceDoc(existing())
@@ -391,7 +396,7 @@ service cloud.firestore {
 
     match /sales/{saleId} {
       allow get: if isValidId(saleId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(saleId) && isValidSale(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(saleId) && isValidSale(incoming()) && isWorkspaceDoc(existing())
@@ -403,7 +408,7 @@ service cloud.firestore {
 
     match /saleItems/{itemId} {
       allow get: if isValidId(itemId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(itemId) && isValidSaleItem(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if false;
@@ -412,7 +417,7 @@ service cloud.firestore {
 
     match /purchases/{purchaseId} {
       allow get: if isValidId(purchaseId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(purchaseId) && isValidPurchase(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if isSignedIn() && isValidId(purchaseId) && isValidPurchase(incoming()) && isWorkspaceDoc(existing())
@@ -424,7 +429,7 @@ service cloud.firestore {
 
     match /purchaseItems/{itemId} {
       allow get: if isValidId(itemId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(itemId) && isValidPurchaseItem(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if false;
@@ -433,7 +438,7 @@ service cloud.firestore {
 
     match /payments/{paymentId} {
       allow get: if isValidId(paymentId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(paymentId) && isValidPayment(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if false;
@@ -442,7 +447,7 @@ service cloud.firestore {
 
     match /auditLogs/{logId} {
       allow get: if isValidId(logId) && isWorkspaceDoc(existing());
-      allow list: if isSignedIn() && existing().id >= 1;
+      allow list: if isBoundedWorkspaceList();
       allow create: if isSignedIn() && isValidId(logId) && isValidAuditLog(incoming())
         && incoming().ownerUid == request.auth.uid && incoming().createdAt == request.time;
       allow update: if false;

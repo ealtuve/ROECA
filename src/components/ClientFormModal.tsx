@@ -88,6 +88,7 @@ export const ClientFormModal: React.FC<ClientFormModalProps> = ({
   const [creditLimitUsd, setCreditLimitUsd] = useState('500');
   const [creditDays, setCreditDays] = useState('15');
   const [isSuspended, setIsSuspended] = useState(false);
+  const [useCostPrice, setUseCostPrice] = useState(false);
   const [formError, setFormError] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
@@ -104,6 +105,7 @@ export const ClientFormModal: React.FC<ClientFormModalProps> = ({
     setCreditLimitUsd(String(c.creditLimitUsd || 0));
     setCreditDays(String(c.creditDays || 15));
     setIsSuspended(Boolean(c.isSuspended));
+    setUseCostPrice(Boolean(c.useCostPrice));
     setFormError('');
   };
 
@@ -130,6 +132,7 @@ export const ClientFormModal: React.FC<ClientFormModalProps> = ({
       setCreditLimitUsd('500');
       setCreditDays('15');
       setIsSuspended(false);
+      setUseCostPrice(false);
       setFormError('');
     }
   }, [isOpen, externalEditingClient, initialQuery]);
@@ -260,6 +263,7 @@ export const ClientFormModal: React.FC<ClientFormModalProps> = ({
         creditLimitUsd: creditEnabled ? Math.max(0, Number(creditLimitUsd) || 0) : 0,
         creditDays: creditEnabled ? Math.max(1, Math.round(Number(creditDays) || 15)) : 0,
         isSuspended,
+        useCostPrice,
       };
 
       const url = editingClient ? `/api/clients/${editingClient.id}` : '/api/clients';
@@ -593,6 +597,32 @@ export const ClientFormModal: React.FC<ClientFormModalProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Toggle: Facturar a Precio de Costo */}
+            <label
+              className={`flex items-start gap-2.5 p-2.5 border rounded-lg cursor-pointer transition-colors ${
+                useCostPrice
+                  ? 'bg-sky-50 dark:bg-sky-950/45 border-sky-300 dark:border-sky-700'
+                  : 'bg-white dark:bg-[#12161d] border-slate-200 dark:border-[#2d3748]'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={useCostPrice}
+                onChange={(e) => setUseCostPrice(e.target.checked)}
+                className="mt-0.5 w-4 h-4 accent-sky-600 rounded cursor-pointer"
+              />
+              <div className="flex-1">
+                <span className="font-bold text-sky-800 dark:text-sky-300 block">
+                  Facturar a precio de costo
+                </span>
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 block">
+                  {useCostPrice
+                    ? 'Activo: todos los productos que se le facturen a este cliente se cobrarán automáticamente a su precio de costo.'
+                    : 'Si se tilda esta opción, al venderle en Facturación (POS) se aplicará el precio de costo en lugar del precio de venta.'}
+                </span>
+              </div>
+            </label>
 
             {/* Toggle: Suspender Cliente */}
             <label

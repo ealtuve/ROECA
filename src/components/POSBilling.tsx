@@ -17,7 +17,6 @@ import {
   AlertTriangle,
   UserCheck,
   Barcode,
-  LayoutGrid,
   RotateCcw,
   Smartphone,
   Banknote,
@@ -106,12 +105,16 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
   // Step 2: Product search by barcode or name
   const [productSearchTerm, setProductSearchTerm] = useState('');
   const [isProductDropdownOpen, setIsProductDropdownOpen] = useState(false);
-  const [showQuickCatalog, setShowQuickCatalog] = useState(false);
   const productSearchInputRef = useRef<HTMLInputElement>(null);
   const productDropdownRef = useRef<HTMLDivElement>(null);
 
   // Invoice Table items
   const [cart, setCart] = useState<CartItem[]>([]);
+  const [lastAddedProductId, setLastAddedProductId] = useState<number | null>(null);
+  const [lastAddedSeq, setLastAddedSeq] = useState(0);
+  const lastAddedTargetRef = useRef<{ id: number; isNew: boolean } | null>(null);
+  const cartScrollContainerRef = useRef<HTMLDivElement>(null);
+  const cartRowRefs = useRef<Record<number, HTMLTableRowElement | null>>({});
 
   // Sale mode: default is 'contado' (Por Cobrar), toggleable to 'credito' (A Crédito)
   const [paymentType, setPaymentType] = useState<'contado' | 'credito'>('contado');
@@ -183,6 +186,7 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
         e.preventDefault();
         setIsPaymentModalOpen(false);
         setSelectedClient(null);
+        setCart((prev) => prev.map((item) => ({ ...item, unitPriceUsd: item.product.priceUsd })));
         setTimeout(() => clientInputRef.current?.focus(), 40);
       } else if (e.key === 'F4') {
         e.preventDefault();
@@ -226,6 +230,31 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Auto-scroll invoice list upward as products are added so the latest item is always clearly visible
+  useEffect(() => {
+    const target = lastAddedTargetRef.current;
+    if (!lastAddedSeq || !target) return;
+
+    const raf = requestAnimationFrame(() => {
+      const container = cartScrollContainerRef.current;
+      if (!container) return;
+      if (target.isNew) {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      } else {
+        cartRowRefs.current[target.id]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    });
+
+    const timer = window.setTimeout(() => {
+      setLastAddedProductId(null);
+    }, 1800);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+    };
+  }, [lastAddedSeq]);
+
   // Step 1: Client autocomplete matching
   const normalizedClientQuery = normalizeText(clientSearchQuery);
   const matchingClients = useMemo(() => {
@@ -239,10 +268,20 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
     });
   }, [clients, normalizedClientQuery]);
 
+  const getEffectivePriceUsd = (product: Product, client: Client | null): number =>
+    client?.useCostPrice ? product.costUsd : product.priceUsd;
+
   const handleSelectClient = (client: Client) => {
     setSelectedClient(client);
     setClientSearchQuery('');
     setIsClientDropdownOpen(false);
+    // Automatically adjust prices of any items already in the cart for this client
+    setCart((prev) =>
+      prev.map((item) => ({
+        ...item,
+        unitPriceUsd: getEffectivePriceUsd(item.product, client),
+      }))
+    );
     if (client.creditEnabled === false) {
       setPaymentType('contado');
     }
@@ -312,7 +351,7 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
         {
           product,
           quantity: 1,
-          unitPriceUsd: product.priceUsd,
+          unitPriceUsd: getEffectivePriceUsd(product, selectedClient),
           discountPercent: 0,
           isExempt: inferDefaultExempt(product),
         },
@@ -320,6 +359,9 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
     });
     setErrorMsg('');
     setStockAlert(null);
+    lastAddedTargetRef.current = { id: product.id, isNew: !existing };
+    setLastAddedProductId(product.id);
+    setLastAddedSeq((n) => n + 1);
     setProductSearchTerm('');
     setIsProductDropdownOpen(false);
     setTimeout(() => {
@@ -834,70 +876,198 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
       {/* ================================================================= */}
       {/* BARRA SUPERIOR ÚNICA: PASO 1 (CLIENTE) + PASO 2 (PRODUCTO/BARRA)  */}
       {/* ================================================================= */}
-      <div className="bg-white dark:bg-[#161b22] px-3 py-2 rounded-xl border border-slate-200 dark:border-[#262f3c] shrink-0 transition-colors">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-center">
-          {/* PASO 1: CLIENTE (5 columnas) */}
-          <div className="lg:col-span-5 relative" ref={clientDropdownRef}>
-            {selectedClient ? (
-              <div
-                className={`h-9 px-2.5 rounded-lg flex items-center justify-between gap-2 border ${
-                  selectedClient.isSuspended
-                    ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-400 dark:border-rose-800'
-                    : 'bg-emerald-50/90 dark:bg-emerald-950/35 border-emerald-300 dark:border-emerald-800/70'
-                }`}
-              >
-                <div className="flex items-center gap-1.5 min-w-0">
+      <div className="bg-white dark:bg-[#161b22] px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-[#262f3c] shrink-0 transition-colors space-y-2.5">
+        {selectedClient ? (
+          <>
+            {/* CLIENTE SELECCIONADO: NOMBRE COMPLETO GRANDE Y DESTACADO */}
+            <div
+              ref={clientDropdownRef}
+              className={`px-3.5 py-2.5 rounded-xl flex flex-wrap items-center justify-between gap-3 border-2 ${
+                selectedClient.isSuspended
+                  ? 'bg-rose-50 dark:bg-rose-950/50 border-rose-400 dark:border-rose-700'
+                  : 'bg-emerald-50/90 dark:bg-emerald-950/35 border-emerald-400 dark:border-emerald-700/80'
+              }`}
+            >
+              <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
+                <div
+                  className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                    selectedClient.isSuspended
+                      ? 'bg-rose-600/15 text-rose-600 dark:text-rose-400'
+                      : 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-400'
+                  }`}
+                >
                   {selectedClient.isSuspended ? (
-                    <Ban className="w-4 h-4 text-rose-600 shrink-0" />
+                    <Ban className="w-5 h-5" />
                   ) : (
-                    <UserCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                  )}
-                  <span className="font-bold text-xs text-slate-900 dark:text-slate-100 truncate">
-                    {selectedClient.name}
-                  </span>
-                  <span className="text-[11px] font-mono text-emerald-800 dark:text-emerald-300 shrink-0">
-                    {selectedClient.idDoc}
-                  </span>
-                  {selectedClient.isSuspended ? (
-                    <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-600 text-white shrink-0">
-                      SUSPENDIDO
-                    </span>
-                  ) : selectedClient.creditEnabled === false ? (
-                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 shrink-0">
-                      CONTADO
-                    </span>
-                  ) : (
-                    <span
-                      className={`hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold border shrink-0 ${
-                        getCreditRatingMeta(selectedClient.creditRating).cls
-                      }`}
-                    >
-                      <Award className="w-2.5 h-2.5" />
-                      {getCreditRatingMeta(selectedClient.creditRating).label}
-                    </span>
-                  )}
-                  {selectedClient.state && (
-                    <span className="hidden 2xl:inline-flex items-center gap-0.5 text-[10px] text-slate-500 dark:text-slate-400 shrink-0">
-                      <MapPin className="w-2.5 h-2.5" />
-                      {selectedClient.zoneName || selectedClient.state}
-                    </span>
+                    <UserCheck className="w-5 h-5" />
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedClient(null);
-                    setClientSearchQuery('');
-                    setErrorMsg('');
-                    setTimeout(() => clientInputRef.current?.focus(), 40);
-                  }}
-                  className="px-2 py-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-white/70 dark:hover:bg-[#1c222b] rounded cursor-pointer shrink-0 whitespace-nowrap"
-                  title="Cambiar cliente (F2)"
-                >
-                  Cambiar (F2)
-                </button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-800 dark:text-emerald-400">
+                      Cliente en facturación
+                    </span>
+                    <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300 bg-white/80 dark:bg-[#161b22] px-2 py-0.5 rounded border border-slate-200/80 dark:border-slate-700">
+                      {selectedClient.idDoc}
+                    </span>
+                    {selectedClient.isSuspended ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-black bg-rose-600 text-white">
+                        SUSPENDIDO
+                      </span>
+                    ) : selectedClient.creditEnabled === false ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                        SOLO CONTADO
+                      </span>
+                    ) : (
+                      <span
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold border ${
+                          getCreditRatingMeta(selectedClient.creditRating).cls
+                        }`}
+                      >
+                        <Award className="w-3 h-3" />
+                        {getCreditRatingMeta(selectedClient.creditRating).label}
+                      </span>
+                    )}
+                    {selectedClient.useCostPrice && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-black bg-sky-600 text-white tracking-wider">
+                        PRECIO DE COSTO
+                      </span>
+                    )}
+                    {selectedClient.state && (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                        <MapPin className="w-3 h-3 shrink-0" />
+                        {selectedClient.zoneName || selectedClient.state}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-lg sm:text-xl font-black tracking-tight text-slate-950 dark:text-white leading-snug break-words">
+                    {selectedClient.name}
+                  </div>
+                </div>
               </div>
-            ) : (
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedClient(null);
+                  setCart((prev) => prev.map((item) => ({ ...item, unitPriceUsd: item.product.priceUsd })));
+                  setClientSearchQuery('');
+                  setErrorMsg('');
+                  setTimeout(() => clientInputRef.current?.focus(), 40);
+                }}
+                className="px-3 py-1.5 text-xs font-bold text-slate-700 dark:text-slate-200 bg-white/90 dark:bg-[#1c222b] hover:text-rose-600 dark:hover:text-rose-400 border border-slate-200 dark:border-[#2d3748] rounded-lg cursor-pointer shrink-0 whitespace-nowrap transition-colors"
+                title="Cambiar cliente (F2)"
+              >
+                Cambiar Cliente (F2)
+              </button>
+            </div>
+
+            {/* PASO 2: BUSCAR PRODUCTO POR CÓDIGO DE BARRA O NOMBRE (ANCHO COMPLETO, SIN CATÁLOGO) */}
+            <div className="flex items-center gap-2 relative" ref={productDropdownRef}>
+              <div className="relative flex-1 min-w-0">
+                <Barcode className="w-4 h-4 text-sky-600 dark:text-sky-400 absolute left-3 top-2.5" />
+                <input
+                  ref={productSearchInputRef}
+                  type="text"
+                  placeholder="2. Buscar por código de barra o nombre del producto / artículo (Enter agrega · F4)"
+                  value={productSearchTerm}
+                  onChange={(e) => {
+                    setProductSearchTerm(e.target.value);
+                    setIsProductDropdownOpen(true);
+                  }}
+                  onFocus={() => setIsProductDropdownOpen(true)}
+                  onKeyDown={handleProductSearchKeyDown}
+                  className="w-full h-9 pl-9 pr-7 bg-slate-50 dark:bg-[#1c222b] border border-slate-300 dark:border-[#2d3748] rounded-lg text-xs font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-hidden focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20"
+                />
+                {productSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductSearchTerm('');
+                      setIsProductDropdownOpen(false);
+                      productSearchInputRef.current?.focus();
+                    }}
+                    className="absolute right-2 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {newSaleSuccessBanner && (
+                <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 shrink-0 whitespace-nowrap">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>Lista nueva</span>
+                </span>
+              )}
+
+              {/* Floating Product Search Dropdown */}
+              {isProductDropdownOpen && productSearchTerm.trim().length > 0 && (
+                <div className="absolute left-0 right-0 top-[40px] bg-white dark:bg-[#1c222b] border border-slate-200 dark:border-[#2d3748] rounded-xl shadow-2xl z-40 max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-[#262f3c]">
+                  {filteredProducts.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-slate-500 dark:text-slate-400">
+                      Sin coincidencias para «{productSearchTerm}».
+                    </div>
+                  ) : (
+                    filteredProducts.slice(0, 12).map((product) => {
+                      const isOutOfStock = product.stock <= 0;
+                      const effectivePriceUsd = getEffectivePriceUsd(product, selectedClient);
+                      const priceVes = effectivePriceUsd * rate;
+                      const defaultExempt = inferDefaultExempt(product);
+
+                      return (
+                        <div
+                          key={product.id}
+                          onClick={() => !isOutOfStock && addToCart(product)}
+                          className={`px-3 py-2 flex items-center justify-between gap-2 text-xs transition-colors ${
+                            isOutOfStock
+                              ? 'opacity-45 cursor-not-allowed bg-slate-50 dark:bg-[#161b22]'
+                              : 'hover:bg-sky-50 dark:hover:bg-sky-950/40 cursor-pointer'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1 flex items-center gap-2">
+                            <span className="font-mono font-bold text-slate-500 dark:text-slate-400 text-[11px] shrink-0">
+                              {product.code}
+                            </span>
+                            <span className="font-bold text-slate-900 dark:text-slate-100 truncate">
+                              {product.name}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                              · {defaultExempt ? 'Exento' : 'IVA 16%'} · Stk {product.stock}
+                            </span>
+                          </div>
+                          <div className="text-right font-mono tabular-nums shrink-0 flex items-center gap-2">
+                            <div>
+                              {selectedClient?.useCostPrice && (
+                                <span className="px-1.5 py-0.5 mr-1.5 rounded text-[9px] font-black bg-sky-100 dark:bg-sky-950/80 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                                  COSTO
+                                </span>
+                              )}
+                              <span className="font-extrabold text-slate-900 dark:text-slate-100">
+                                Bs. {priceVes.toFixed(2)}
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">
+                                (${effectivePriceUsd.toFixed(2)})
+                              </span>
+                            </div>
+                            {!isOutOfStock && (
+                              <span className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold">
+                                +
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-2.5 items-center">
+            {/* PASO 1: SELECCIONAR CLIENTE (5 columnas) */}
+            <div className="lg:col-span-5 relative" ref={clientDropdownRef}>
               <div className="flex items-center gap-1.5">
                 <div className="relative flex-1 min-w-0">
                   <Search className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 absolute left-2.5 top-2.5" />
@@ -951,191 +1121,153 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
                   <span className="hidden sm:inline">Nuevo</span>
                 </button>
               </div>
-            )}
 
-            {/* Floating Client Autocomplete Dropdown */}
-            {!selectedClient && isClientDropdownOpen && clientSearchQuery.trim().length > 0 && matchingClients.length > 0 && (
-              <div className="absolute left-0 right-0 top-[40px] bg-white dark:bg-[#1c222b] border border-slate-200 dark:border-[#2d3748] rounded-xl shadow-2xl z-40 max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-[#262f3c]">
-                {matchingClients.map((c) => (
-                  <div
-                    key={c.id}
-                    onClick={() => handleSelectClient(c)}
-                    className="px-3 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer flex items-center justify-between text-xs"
-                  >
-                    <div className="min-w-0">
-                      <div className="font-bold text-slate-900 dark:text-slate-100 truncate">{c.name}</div>
-                      <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-                        {c.idDoc} {c.phone ? `· ${c.phone}` : ''}
-                      </div>
-                    </div>
-                    <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400 shrink-0 ml-2">
-                      {c.creditLimitUsd > 0 ? `Créd. Bs. ${(c.creditLimitUsd * rate).toFixed(0)}` : 'Contado'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Floating "Client does not exist — Create?" Prompt */}
-            {!selectedClient && clientSearchQuery.trim().length > 0 && matchingClients.length === 0 && (
-              <div className="absolute left-0 right-0 top-[40px] p-2.5 bg-amber-50 dark:bg-[#231d12] border border-amber-400 dark:border-amber-700 rounded-xl shadow-2xl z-40 flex items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 min-w-0">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
-                  <span className="font-bold text-amber-950 dark:text-amber-200 truncate">
-                    «{clientSearchQuery.trim()}» no existe. ¿Quiere crearlo?
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={openAddClientWithQuery}
-                  className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-[11px] shrink-0 whitespace-nowrap flex items-center gap-1 cursor-pointer"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>Sí, Crear</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* PASO 2: BUSCAR PRODUCTO POR CÓDIGO DE BARRA O NOMBRE (7 columnas) */}
-          <div className="lg:col-span-7 flex items-center gap-1.5 relative" ref={productDropdownRef}>
-            <div className="relative flex-1 min-w-0">
-              <Barcode className="w-4 h-4 text-sky-600 dark:text-sky-400 absolute left-2.5 top-2.5" />
-              <input
-                ref={productSearchInputRef}
-                type="text"
-                placeholder="2. Buscar por código de barra o nombre del producto / artículo (Enter agrega · F4)"
-                value={productSearchTerm}
-                onChange={(e) => {
-                  setProductSearchTerm(e.target.value);
-                  setIsProductDropdownOpen(true);
-                }}
-                onFocus={() => setIsProductDropdownOpen(true)}
-                onKeyDown={handleProductSearchKeyDown}
-                className="w-full h-9 pl-9 pr-7 bg-slate-50 dark:bg-[#1c222b] border border-slate-300 dark:border-[#2d3748] rounded-lg text-xs font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-hidden focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20"
-              />
-              {productSearchTerm && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProductSearchTerm('');
-                    setIsProductDropdownOpen(false);
-                    productSearchInputRef.current?.focus();
-                  }}
-                  className="absolute right-2 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowQuickCatalog((v) => !v)}
-              className={`h-9 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 shrink-0 whitespace-nowrap cursor-pointer transition-colors ${
-                showQuickCatalog
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-slate-100 hover:bg-slate-200 dark:bg-[#1f2530] dark:hover:bg-[#273040] text-slate-700 dark:text-slate-300 border-slate-200 dark:border-[#2d3748]'
-              }`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-              <span>Catálogo</span>
-            </button>
-
-            {newSaleSuccessBanner && (
-              <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 shrink-0 whitespace-nowrap">
-                <CheckCircle className="w-3.5 h-3.5" />
-                <span>Lista nueva</span>
-              </span>
-            )}
-
-            {/* Floating Product Search Dropdown */}
-            {isProductDropdownOpen && productSearchTerm.trim().length > 0 && (
-              <div className="absolute left-0 right-0 top-[40px] bg-white dark:bg-[#1c222b] border border-slate-200 dark:border-[#2d3748] rounded-xl shadow-2xl z-40 max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-[#262f3c]">
-                {filteredProducts.length === 0 ? (
-                  <div className="p-3 text-center text-xs text-slate-500 dark:text-slate-400">
-                    Sin coincidencias para «{productSearchTerm}».
-                  </div>
-                ) : (
-                  filteredProducts.slice(0, 12).map((product) => {
-                    const isOutOfStock = product.stock <= 0;
-                    const priceVes = product.priceUsd * rate;
-                    const defaultExempt = inferDefaultExempt(product);
-
-                    return (
-                      <div
-                        key={product.id}
-                        onClick={() => !isOutOfStock && addToCart(product)}
-                        className={`px-3 py-2 flex items-center justify-between gap-2 text-xs transition-colors ${
-                          isOutOfStock
-                            ? 'opacity-45 cursor-not-allowed bg-slate-50 dark:bg-[#161b22]'
-                            : 'hover:bg-sky-50 dark:hover:bg-sky-950/40 cursor-pointer'
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1 flex items-center gap-2">
-                          <span className="font-mono font-bold text-slate-500 dark:text-slate-400 text-[11px] shrink-0">
-                            {product.code}
-                          </span>
-                          <span className="font-bold text-slate-900 dark:text-slate-100 truncate">
-                            {product.name}
-                          </span>
-                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
-                            · {defaultExempt ? 'Exento' : 'IVA 16%'} · Stk {product.stock}
-                          </span>
-                        </div>
-                        <div className="text-right font-mono tabular-nums shrink-0 flex items-center gap-2">
-                          <div>
-                            <span className="font-extrabold text-slate-900 dark:text-slate-100">
-                              Bs. {priceVes.toFixed(2)}
-                            </span>
-                            <span className="text-[10px] text-slate-400 ml-1">
-                              (${product.priceUsd.toFixed(2)})
-                            </span>
-                          </div>
-                          {!isOutOfStock && (
-                            <span className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold">
-                              +
+              {/* Floating Client Autocomplete Dropdown */}
+              {isClientDropdownOpen && clientSearchQuery.trim().length > 0 && matchingClients.length > 0 && (
+                <div className="absolute left-0 right-0 top-[40px] bg-white dark:bg-[#1c222b] border border-slate-200 dark:border-[#2d3748] rounded-xl shadow-2xl z-40 max-h-56 overflow-y-auto divide-y divide-slate-100 dark:divide-[#262f3c]">
+                  {matchingClients.map((c) => (
+                    <div
+                      key={c.id}
+                      onClick={() => handleSelectClient(c)}
+                      className="px-3 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer flex items-center justify-between text-xs"
+                    >
+                      <div className="min-w-0 pr-2">
+                        <div className="font-bold text-slate-900 dark:text-slate-100 leading-snug break-words flex items-center gap-1.5 flex-wrap">
+                          <span>{c.name}</span>
+                          {c.useCostPrice && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-sky-100 dark:bg-sky-950/80 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800">
+                              PRECIO COSTO
                             </span>
                           )}
                         </div>
+                        <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                          {c.idDoc} {c.phone ? `· ${c.phone}` : ''}
+                        </div>
                       </div>
-                    );
-                  })
+                      <span className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400 shrink-0 ml-2">
+                        {c.creditLimitUsd > 0 ? `Créd. Bs. ${(c.creditLimitUsd * rate).toFixed(0)}` : 'Contado'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Floating "Client does not exist — Create?" Prompt */}
+              {clientSearchQuery.trim().length > 0 && matchingClients.length === 0 && (
+                <div className="absolute left-0 right-0 top-[40px] p-2.5 bg-amber-50 dark:bg-[#231d12] border border-amber-400 dark:border-amber-700 rounded-xl shadow-2xl z-40 flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span className="font-bold text-amber-950 dark:text-amber-200 truncate">
+                      «{clientSearchQuery.trim()}» no existe. ¿Quiere crearlo?
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={openAddClientWithQuery}
+                    className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold text-[11px] shrink-0 whitespace-nowrap flex items-center gap-1 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    <span>Sí, Crear</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* PASO 2: BUSCAR PRODUCTO POR CÓDIGO DE BARRA O NOMBRE (7 columnas, SIN CATÁLOGO) */}
+            <div className="lg:col-span-7 flex items-center gap-1.5 relative" ref={productDropdownRef}>
+              <div className="relative flex-1 min-w-0">
+                <Barcode className="w-4 h-4 text-sky-600 dark:text-sky-400 absolute left-2.5 top-2.5" />
+                <input
+                  ref={productSearchInputRef}
+                  type="text"
+                  placeholder="2. Buscar por código de barra o nombre del producto / artículo (Enter agrega · F4)"
+                  value={productSearchTerm}
+                  onChange={(e) => {
+                    setProductSearchTerm(e.target.value);
+                    setIsProductDropdownOpen(true);
+                  }}
+                  onFocus={() => setIsProductDropdownOpen(true)}
+                  onKeyDown={handleProductSearchKeyDown}
+                  className="w-full h-9 pl-9 pr-7 bg-slate-50 dark:bg-[#1c222b] border border-slate-300 dark:border-[#2d3748] rounded-lg text-xs font-medium text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-hidden focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20"
+                />
+                {productSearchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProductSearchTerm('');
+                      setIsProductDropdownOpen(false);
+                      productSearchInputRef.current?.focus();
+                    }}
+                    className="absolute right-2 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 )}
               </div>
-            )}
-          </div>
-        </div>
 
-        {/* Collapsible Quick Catalog Strip */}
-        {showQuickCatalog && (
-          <div className="mt-2 pt-2 border-t border-slate-200 dark:border-[#262f3c] grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 xl:grid-cols-8 gap-1.5 max-h-32 overflow-y-auto pr-1">
-            {filteredProducts.slice(0, 24).map((product) => {
-              const isOutOfStock = product.stock <= 0;
-              return (
-                <button
-                  type="button"
-                  key={product.id}
-                  disabled={isOutOfStock}
-                  onClick={() => addToCart(product)}
-                  className={`px-2 py-1.5 rounded-lg border text-left transition-colors ${
-                    isOutOfStock
-                      ? 'bg-slate-50 dark:bg-[#1a2029] border-slate-200 dark:border-[#262f3c] opacity-40 cursor-not-allowed'
-                      : 'bg-slate-50/70 dark:bg-[#1a212b] border-slate-200 dark:border-[#2d3748] hover:border-emerald-500 cursor-pointer'
-                  }`}
-                >
-                  <div className="text-[11px] font-bold text-slate-900 dark:text-slate-100 truncate">
-                    {product.name}
-                  </div>
-                  <div className="flex items-center justify-between font-mono text-[10px] mt-0.5">
-                    <span className="font-bold text-emerald-700 dark:text-emerald-400">
-                      Bs. {(product.priceUsd * rate).toFixed(2)}
-                    </span>
-                    <span className="text-slate-400">{product.stock}</span>
-                  </div>
-                </button>
-              );
-            })}
+              {newSaleSuccessBanner && (
+                <span className="hidden xl:inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 shrink-0 whitespace-nowrap">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>Lista nueva</span>
+                </span>
+              )}
+
+              {/* Floating Product Search Dropdown */}
+              {isProductDropdownOpen && productSearchTerm.trim().length > 0 && (
+                <div className="absolute left-0 right-0 top-[40px] bg-white dark:bg-[#1c222b] border border-slate-200 dark:border-[#2d3748] rounded-xl shadow-2xl z-40 max-h-64 overflow-y-auto divide-y divide-slate-100 dark:divide-[#262f3c]">
+                  {filteredProducts.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-slate-500 dark:text-slate-400">
+                      Sin coincidencias para «{productSearchTerm}».
+                    </div>
+                  ) : (
+                    filteredProducts.slice(0, 12).map((product) => {
+                      const isOutOfStock = product.stock <= 0;
+                      const priceVes = product.priceUsd * rate;
+                      const defaultExempt = inferDefaultExempt(product);
+
+                      return (
+                        <div
+                          key={product.id}
+                          onClick={() => !isOutOfStock && addToCart(product)}
+                          className={`px-3 py-2 flex items-center justify-between gap-2 text-xs transition-colors ${
+                            isOutOfStock
+                              ? 'opacity-45 cursor-not-allowed bg-slate-50 dark:bg-[#161b22]'
+                              : 'hover:bg-sky-50 dark:hover:bg-sky-950/40 cursor-pointer'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1 flex items-center gap-2">
+                            <span className="font-mono font-bold text-slate-500 dark:text-slate-400 text-[11px] shrink-0">
+                              {product.code}
+                            </span>
+                            <span className="font-bold text-slate-900 dark:text-slate-100 truncate">
+                              {product.name}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                              · {defaultExempt ? 'Exento' : 'IVA 16%'} · Stk {product.stock}
+                            </span>
+                          </div>
+                          <div className="text-right font-mono tabular-nums shrink-0 flex items-center gap-2">
+                            <div>
+                              <span className="font-extrabold text-slate-900 dark:text-slate-100">
+                                Bs. {priceVes.toFixed(2)}
+                              </span>
+                              <span className="text-[10px] text-slate-400 ml-1">
+                                (${product.priceUsd.toFixed(2)})
+                              </span>
+                            </div>
+                            {!isOutOfStock && (
+                              <span className="px-2 py-0.5 bg-emerald-600 text-white rounded text-[10px] font-bold">
+                                +
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -1144,7 +1276,7 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
       {/* TABLA GRANDE DE ARTÍCULOS A ANCHO COMPLETO (100% PANTALLA)        */}
       {/* ================================================================= */}
       <div className="flex-1 min-h-[240px] lg:min-h-0 bg-white dark:bg-[#161b22] rounded-xl border border-slate-200 dark:border-[#262f3c] flex flex-col overflow-hidden transition-colors">
-        <div className="flex-1 overflow-auto min-h-0">
+        <div ref={cartScrollContainerRef} className="flex-1 overflow-auto min-h-0">
           <table className="w-full text-left text-xs border-collapse">
             <thead className="sticky top-0 z-10 bg-slate-100 dark:bg-[#1c222b] border-b border-slate-200 dark:border-[#262f3c] text-slate-600 dark:text-slate-300 font-bold text-[11px]">
               <tr>
@@ -1179,7 +1311,14 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
                   return (
                     <tr
                       key={item.product.id}
-                      className="hover:bg-slate-50/80 dark:hover:bg-[#1f2530]/70 transition-colors"
+                      ref={(el) => {
+                        cartRowRefs.current[item.product.id] = el;
+                      }}
+                      className={`transition-colors ${
+                        lastAddedProductId === item.product.id
+                          ? 'bg-emerald-50/90 dark:bg-emerald-950/45 ring-1 ring-inset ring-emerald-400/70'
+                          : 'hover:bg-slate-50/80 dark:hover:bg-[#1f2530]/70'
+                      }`}
                     >
                       {/* Código */}
                       <td className="py-2 px-3 font-mono text-xs font-bold text-slate-600 dark:text-slate-300 align-middle whitespace-nowrap">
@@ -1368,18 +1507,18 @@ export const POSBilling: React.FC<POSBillingProps> = ({ exchangeRate, onSaleComp
         )}
 
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          {/* TOTAL A PAGAR DESTACADO */}
+          {/* TOTAL A PAGAR DESTACADO EN GRANDE */}
           <div className="flex items-center gap-4">
-            <div className="px-3.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/45 border border-emerald-300 dark:border-emerald-800/80 rounded-xl font-mono tabular-nums">
-              <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 block leading-none">
-                TOTAL A FACTURAR
+            <div className="px-5 py-2.5 bg-emerald-50 dark:bg-emerald-950/55 border-2 border-emerald-500/80 dark:border-emerald-600/80 rounded-2xl font-mono tabular-nums shadow-xs">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block leading-none">
+                TOTAL DE LA FACTURA
               </span>
-              <div className="flex items-baseline gap-2.5 mt-0.5">
-                <span className="text-xl sm:text-2xl font-black text-emerald-950 dark:text-emerald-100 leading-none">
+              <div className="flex flex-wrap items-baseline gap-x-3.5 gap-y-1 mt-1">
+                <span className="text-3xl sm:text-4xl font-black tracking-tight text-emerald-950 dark:text-emerald-50 leading-none">
                   Bs. {totals.totalVes.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
-                <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400">
-                  Ref. ${totals.totalUsd.toFixed(2)} USD
+                <span className="text-lg sm:text-xl font-extrabold text-emerald-700 dark:text-emerald-300 leading-none">
+                  $ {totals.totalUsd.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
                 </span>
               </div>
             </div>

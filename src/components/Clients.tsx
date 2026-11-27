@@ -6,7 +6,6 @@ import {
   Edit,
   Trash2,
   CheckCircle,
-  MapPin,
   Ban,
   UserCheck,
   Award,
@@ -394,26 +393,24 @@ export const Clients: React.FC<ClientsProps> = ({
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-50 dark:bg-[#1f2530] border-b border-slate-200 dark:border-[#262f3c] text-slate-600 dark:text-slate-300 font-semibold uppercase tracking-wider">
               <tr>
-                <th className="py-3 px-4">Cédula / RIF</th>
-                <th className="py-3 px-4">Nombre / Razón Social</th>
-                <th className="py-3 px-4">Estado / Zona</th>
-                <th className="py-3 px-4">Contacto</th>
-                <th className="py-3 px-4">Condición Crédito</th>
-                <th className="py-3 px-4 text-right">Deuda Pendiente</th>
-                <th className="py-3 px-4 text-center">Categoría / Estatus</th>
-                <th className="py-3 px-4 text-center">Acciones</th>
+                <th className="py-2.5 px-3 whitespace-nowrap">Cédula / RIF</th>
+                <th className="py-2.5 px-3">Nombre / Razón Social</th>
+                <th className="py-2.5 px-3 whitespace-nowrap">Condición Crédito</th>
+                <th className="py-2.5 px-3 text-right whitespace-nowrap">Deuda Pendiente</th>
+                <th className="py-2.5 px-3 text-center whitespace-nowrap">Categoría</th>
+                <th className="py-2.5 px-3 text-center whitespace-nowrap">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-[#262f3c]">
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={6} className="py-8 text-center text-slate-400">
                     Cargando clientes...
                   </td>
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-slate-400">
+                  <td colSpan={6} className="py-8 text-center text-slate-400">
                     No se encontraron clientes con los filtros seleccionados.
                   </td>
                 </tr>
@@ -433,67 +430,46 @@ export const Clients: React.FC<ClientsProps> = ({
                       }`}
                       title="Clic para ver facturas emitidas, detalles y registrar abonos o cancelaciones"
                     >
-                      <td className="py-3 px-4 font-mono font-bold text-slate-900 dark:text-slate-100 whitespace-nowrap">
+                      <td className="py-2.5 px-3 font-mono font-bold text-slate-900 dark:text-slate-100 whitespace-nowrap">
                         {client.idDoc}
                       </td>
-                      <td className="py-3 px-4 font-semibold text-slate-900 dark:text-slate-100">
+                      <td className="py-2.5 px-3 font-semibold text-slate-900 dark:text-slate-100 max-w-[260px]">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span
-                            className={
+                            className={`truncate ${
                               client.isSuspended
                                 ? 'line-through text-slate-500'
                                 : 'text-emerald-800 dark:text-emerald-300 hover:underline'
-                            }
+                            }`}
+                            title={client.name}
                           >
                             {client.name}
                           </span>
                           {client.isSuspended && (
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-600 text-white tracking-wider">
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-rose-600 text-white tracking-wider shrink-0">
                               SUSPENDIDO
+                            </span>
+                          )}
+                          {client.useCostPrice && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-sky-100 dark:bg-sky-950/70 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800 tracking-wider shrink-0">
+                              PRECIO COSTO
                             </span>
                           )}
                         </div>
                         {client.address && (
-                          <span className="block text-[11px] text-slate-400 dark:text-slate-500 font-normal truncate max-w-xs">
+                          <span className="block text-[11px] text-slate-400 dark:text-slate-500 font-normal truncate">
                             {client.address}
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 whitespace-nowrap">
-                        {client.state || client.zoneName ? (
-                          <div className="space-y-0.5">
-                            {client.state && (
-                              <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-800 dark:text-slate-200">
-                                <MapPin className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                                <span>{client.state}</span>
-                              </div>
-                            )}
-                            {client.zoneName && (
-                              <div className="text-[10px] text-slate-500 dark:text-slate-400 pl-4">
-                                {client.zoneName}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-[11px] text-slate-400 italic">Sin asignar</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 text-slate-600 dark:text-slate-300">
-                        {client.phone && <div className="text-[11px] font-mono">{client.phone}</div>}
-                        {client.email && (
-                          <div className="text-[10px] text-slate-400 dark:text-slate-500 truncate max-w-[160px]">
-                            {client.email}
-                          </div>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 whitespace-nowrap">
+                      <td className="py-2.5 px-3 whitespace-nowrap">
                         {creditAllowed ? (
                           <div>
                             <div className="font-mono font-bold text-slate-800 dark:text-slate-200">
-                              Lím. ${client.creditLimitUsd.toFixed(0)} · {client.creditDays || 15} días
+                              Lím. ${client.creditLimitUsd.toFixed(0)} · {client.creditDays || 15}d
                             </div>
                             <div className="text-[10px] text-slate-400 font-mono">
-                              Disp: ${available.toFixed(2)} (Bs. {(available * rate).toFixed(0)})
+                              Disp: ${available.toFixed(2)}
                             </div>
                           </div>
                         ) : (
@@ -503,7 +479,7 @@ export const Clients: React.FC<ClientsProps> = ({
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-right font-mono tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 px-3 text-right font-mono tabular-nums whitespace-nowrap">
                         <div className={hasDebt ? 'text-rose-700 dark:text-rose-400 font-bold' : 'text-slate-400'}>
                           Bs. {(client.currentBalanceUsd * rate).toFixed(2)}
                         </div>
@@ -511,8 +487,8 @@ export const Clients: React.FC<ClientsProps> = ({
                           ${client.currentBalanceUsd.toFixed(2)}
                         </div>
                       </td>
-                      <td className="py-3 px-4 text-center whitespace-nowrap">
-                        <div className="flex flex-col items-center gap-1">
+                      <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                        <div className="flex flex-col items-center gap-0.5">
                           {creditAllowed ? (
                             <span
                               title={ratingMeta.desc}
@@ -538,7 +514,7 @@ export const Clients: React.FC<ClientsProps> = ({
                         </div>
                       </td>
                       <td
-                        className="py-3 px-4 text-center whitespace-nowrap"
+                        className="py-2.5 px-3 text-center whitespace-nowrap"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="flex items-center justify-center gap-1">
@@ -553,7 +529,7 @@ export const Clients: React.FC<ClientsProps> = ({
                             title="Ver facturas emitidas, detalles y abonar o cancelar créditos"
                           >
                             <FileText className="w-3 h-3" />
-                            <span>{hasDebt ? 'Facturas / Abonar' : 'Facturas'}</span>
+                            <span>{hasDebt ? 'Abonar' : 'Facturas'}</span>
                           </button>
                           <button
                             type="button"

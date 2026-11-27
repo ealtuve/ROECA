@@ -342,6 +342,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
+    if (module === 'client_analytics') {
+      return (
+        user.role === 'admin' ||
+        allowed.includes('client_analytics') ||
+        (allowed.includes('clients') && allowed.includes('reports'))
+      );
+    }
+
     return allowed.includes(module);
   };
 
